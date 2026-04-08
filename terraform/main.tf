@@ -69,7 +69,7 @@ resource "azurerm_cosmosdb_sql_container" "llm_models" {
   resource_group_name = azurerm_resource_group.main.name
   account_name        = azurerm_cosmosdb_account.main.name
   database_name       = azurerm_cosmosdb_sql_database.main.name
-  partition_key_path  = "/id"
+  partition_key_paths = ["/id"]
 }
 
 resource "azurerm_cosmosdb_sql_container" "vm_instances" {
@@ -77,7 +77,7 @@ resource "azurerm_cosmosdb_sql_container" "vm_instances" {
   resource_group_name = azurerm_resource_group.main.name
   account_name        = azurerm_cosmosdb_account.main.name
   database_name       = azurerm_cosmosdb_sql_database.main.name
-  partition_key_path  = "/id"
+  partition_key_paths = ["/id"]
 
   # TTL for evicted/terminated instances: -1 = no automatic expiry; set to e.g. 2592000 for 30 days
   default_ttl = -1
@@ -171,7 +171,7 @@ resource "azurerm_linux_virtual_machine" "main" {
   name                = "${local.project}-vm"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
-  size                = "Standard_B2s"
+  size                = "Standard_B1s"
   admin_username      = "azureuser"
 
   network_interface_ids = [azurerm_network_interface.main.id]
