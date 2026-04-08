@@ -1,0 +1,51 @@
+"""Temporal worker — registers all workflows and activities, then runs indefinitely."""
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from temporalio.client import Client
+from temporalio.worker import Worker
+
+from config import get_settings
+from temporal.activities.azure import (
+    delete_azure_vm,
+    get_cheapest_region,
+    provision_azure_vm,
+    wait_for_model_ready,
+)
+from temporal.activities.database import update_vm_status
+from temporal.workflows.vm_provisioning import ProvisionVMWorkflow
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+async def main() -> None:
+    settings = get_settings()
+    client = await Client.connect(
+        settings.temporal_host, namespace=settings.temporal_namespace
+    )
+
+    worker = Worker(
+        client,
+        task_queue=settings.temporal_task_queue,
+        workflows=[ProvisionVMWorkflow],
+        activities=[
+            get_cheapest_region,
+            provision_azure_vm,
+            wait_for_model_ready,
+            delete_azure_vm,
+            update_vm_status,
+        ],
+    )
+
+    logger.info("Worker listening on task queue '%s'", settings.temporal_task_queue)
+    await worker.run()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
