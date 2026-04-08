@@ -8,8 +8,8 @@ terraform {
   required_version = ">= 1.3.0"
 
   backend "azurerm" {
-    resource_group_name  = "az-spot-tfstate-rg"
-    storage_account_name = "azspottfstate"
+    resource_group_name  = "az-spot-orchestrator-tfstate-rg"
+    storage_account_name = "azspotorchtfstate"
     container_name       = "tfstate"
     key                  = "az-spot-orchestrator.tfstate"
   }
@@ -17,23 +17,27 @@ terraform {
 
 provider "azurerm" {
   features {}
-  subscription_id = var.subscription_id
+}
+
+locals {
+  project        = "az-spot-orchestrator"
+  ssh_public_key = var.ssh_public_key != "" ? var.ssh_public_key : file("~/.ssh/id_rsa.pub")
 }
 
 # ── Resource Group ─────────────────────────────────────────────────────────────
 resource "azurerm_resource_group" "main" {
-  name     = var.resource_group_name
+  name     = "${local.project}-rg"
   location = var.location
 
   tags = {
-    project = "az-spot-orchestrator"
+    project = local.project
     env     = var.environment
   }
 }
 
 # ── Azure Cosmos DB (serverless, replaces PostgreSQL) ─────────────────────────
 resource "azurerm_cosmosdb_account" "main" {
-  name                = var.cosmos_account_name
+  name                = local.project
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   offer_type          = "Standard"
@@ -55,13 +59,13 @@ resource "azurerm_cosmosdb_account" "main" {
 }
 
 resource "azurerm_cosmosdb_sql_database" "main" {
-  name                = "az-spot-orchestrator"
+  name                = local.project
   resource_group_name = azurerm_resource_group.main.name
   account_name        = azurerm_cosmosdb_account.main.name
 }
 
 resource "azurerm_cosmosdb_sql_container" "llm_models" {
-  name                = "llm_models"
+  name                = "llm-models"
   resource_group_name = azurerm_resource_group.main.name
   account_name        = azurerm_cosmosdb_account.main.name
   database_name       = azurerm_cosmosdb_sql_database.main.name
@@ -69,33 +73,33 @@ resource "azurerm_cosmosdb_sql_container" "llm_models" {
 }
 
 resource "azurerm_cosmosdb_sql_container" "vm_instances" {
-  name                = "vm_instances"
+  name                = "vm-instances"
   resource_group_name = azurerm_resource_group.main.name
   account_name        = azurerm_cosmosdb_account.main.name
   database_name       = azurerm_cosmosdb_sql_database.main.name
   partition_key_path  = "/id"
 
-  # TTL for evicted/terminated instances: 30 days (optional, saves cost)
-  default_ttl = -1  # -1 = no automatic expiry; set to e.g. 2592000 for 30 days
+  # TTL for evicted/terminated instances: -1 = no automatic expiry; set to e.g. 2592000 for 30 days
+  default_ttl = -1
 }
 
 # ── Control Plane Networking ───────────────────────────────────────────────────
-resource "azurerm_virtual_network" "control_plane" {
-  name                = "az-spot-cp-vnet"
+resource "azurerm_virtual_network" "main" {
+  name                = "${local.project}-vnet"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   address_space       = ["10.1.0.0/16"]
 }
 
-resource "azurerm_subnet" "control_plane" {
-  name                 = "cp-subnet"
+resource "azurerm_subnet" "main" {
+  name                 = "${local.project}-subnet"
   resource_group_name  = azurerm_resource_group.main.name
-  virtual_network_name = azurerm_virtual_network.control_plane.name
+  virtual_network_name = azurerm_virtual_network.main.name
   address_prefixes     = ["10.1.0.0/24"]
 }
 
-resource "azurerm_network_security_group" "control_plane" {
-  name                = "az-spot-cp-nsg"
+resource "azurerm_network_security_group" "main" {
+  name                = "${local.project}-nsg"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
 
@@ -136,45 +140,45 @@ resource "azurerm_network_security_group" "control_plane" {
   }
 }
 
-resource "azurerm_subnet_network_security_group_association" "control_plane" {
-  subnet_id                 = azurerm_subnet.control_plane.id
-  network_security_group_id = azurerm_network_security_group.control_plane.id
+resource "azurerm_subnet_network_security_group_association" "main" {
+  subnet_id                 = azurerm_subnet.main.id
+  network_security_group_id = azurerm_network_security_group.main.id
 }
 
 # ── Control Plane VM (stable, non-Spot) ───────────────────────────────────────
-resource "azurerm_public_ip" "control_plane" {
-  name                = "az-spot-cp-pip"
+resource "azurerm_public_ip" "main" {
+  name                = "${local.project}-pip"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   allocation_method   = "Static"
   sku                 = "Standard"
 }
 
-resource "azurerm_network_interface" "control_plane" {
-  name                = "az-spot-cp-nic"
+resource "azurerm_network_interface" "main" {
+  name                = "${local.project}-nic"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
 
   ip_configuration {
     name                          = "ipconfig1"
-    subnet_id                     = azurerm_subnet.control_plane.id
+    subnet_id                     = azurerm_subnet.main.id
     private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = azurerm_public_ip.control_plane.id
+    public_ip_address_id          = azurerm_public_ip.main.id
   }
 }
 
-resource "azurerm_linux_virtual_machine" "control_plane" {
-  name                = "az-spot-control-plane"
+resource "azurerm_linux_virtual_machine" "main" {
+  name                = "${local.project}-vm"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   size                = "Standard_B2s"
   admin_username      = "azureuser"
 
-  network_interface_ids = [azurerm_network_interface.control_plane.id]
+  network_interface_ids = [azurerm_network_interface.main.id]
 
   admin_ssh_key {
     username   = "azureuser"
-    public_key = var.ssh_public_key
+    public_key = local.ssh_public_key
   }
 
   os_disk {

@@ -1,14 +1,3 @@
-variable "subscription_id" {
-  type        = string
-  description = "Azure subscription ID"
-}
-
-variable "resource_group_name" {
-  type        = string
-  default     = "az-spot-orchestrator-rg"
-  description = "Resource group for all control-plane resources"
-}
-
 variable "location" {
   type        = string
   default     = "eastus"
@@ -21,12 +10,8 @@ variable "environment" {
   description = "Environment tag applied to all resources"
 }
 
-variable "cosmos_account_name" {
-  type        = string
-  description = "Globally unique name for the Cosmos DB account (lowercase letters, digits, hyphens)"
-}
-
 variable "ssh_public_key" {
   type        = string
-  description = "SSH public key for the control-plane VM admin user"
+  default     = ""
+  description = "SSH public key for the control-plane VM. Defaults to ~/.ssh/id_rsa.pub when empty."
 }
