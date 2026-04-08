@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import uuid
-from datetime import datetime
-
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from db.models import VMStatus
 
@@ -23,37 +20,34 @@ class LLMModelCreate(BaseModel):
     )
     vm_size: str = Field(
         "Standard_NC4as_T4_v3",
-        description="Azure VM SKU to use for inference (must have enough VRAM)",
+        description="Azure VM SKU to use for inference",
     )
 
 
 class LLMModelResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
+    id: str
     name: str
     description: str | None
     size_mb: int
     model_identifier: str
     vm_size: str
-    created_at: datetime
+    created_at: str
 
 
 # ── VM Instance ────────────────────────────────────────────────────────────────
 
 class VMInstanceResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    model_id: uuid.UUID
+    id: str
+    model_id: str
+    model_name: str
     vm_name: str
     resource_group: str
     region: str | None
     ip_address: str | None
     status: VMStatus
     workflow_id: str | None
-    created_at: datetime
-    updated_at: datetime
+    created_at: str
+    updated_at: str
 
 
 # ── Provisioning ──────────────────────────────────────────────────────────────
@@ -70,7 +64,7 @@ class ProvisionResponse(BaseModel):
     status: str = "accepted"
 
 
-# ── VM Lifecycle Notifications (called by VM via cloud-init / eviction hook) ──
+# ── VM Lifecycle Notifications ────────────────────────────────────────────────
 
 class VMEvictedNotification(BaseModel):
     reason: str | None = None

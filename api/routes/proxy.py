@@ -1,17 +1,15 @@
-"""Reverse-proxy route — forwards LLM requests to the active Spot VM."""
+"""Reverse-proxy — forwards LLM requests to the active Spot VM."""
 from __future__ import annotations
 
 import logging
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
-from sqlalchemy import select
 
-from api.deps import DBSession
-from db.models import LLMModel, VMInstance, VMStatus
+from db.cosmos import get_instances_container
+from db.models import VMStatus
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter()
 
 
@@ -19,39 +17,43 @@ router = APIRouter()
     "/proxy/{model_name}/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
 )
-async def proxy_to_vm(
-    model_name: str,
-    path: str,
-    request: Request,
-    db: DBSession,
-) -> Response:
+async def proxy_to_vm(model_name: str, path: str, request: Request) -> Response:
     """Forward any LLM API request to the running Spot VM for the given model.
 
     Upstream URL: ``http://<vm_ip>:11434/<path>``
 
-    Example (OpenAI-compatible):
+    Example (OpenAI-compatible Ollama endpoint):
         POST /proxy/llama3-8b/v1/chat/completions
     """
-    # Look up the most recently created running instance for this model
-    row = await db.execute(
-        select(VMInstance)
-        .join(LLMModel)
-        .where(LLMModel.name == model_name)
-        .where(VMInstance.status == VMStatus.running)
-        .order_by(VMInstance.created_at.desc())
-        .limit(1)
-    )
-    instance = row.scalar_one_or_none()
+    container = get_instances_container()
 
-    if not instance or not instance.ip_address:
+    # model_name is denormalised on VMInstance — single cross-partition query
+    items = [
+        item
+        async for item in container.query_items(
+            query=(
+                "SELECT * FROM c "
+                "WHERE c.model_name = @mn AND c.status = @st "
+                "ORDER BY c.created_at DESC "
+                "OFFSET 0 LIMIT 1"
+            ),
+            parameters=[
+                {"name": "@mn", "value": model_name},
+                {"name": "@st", "value": VMStatus.running.value},
+            ],
+            enable_cross_partition_query=True,
+        )
+    ]
+
+    if not items or not items[0].get("ip_address"):
         raise HTTPException(
             status_code=503,
-            detail=f"No running instance available for model '{model_name}'",
+            detail=f"No running instance for model '{model_name}'",
         )
 
-    target_url = f"http://{instance.ip_address}:11434/{path}"
+    ip = items[0]["ip_address"]
+    target_url = f"http://{ip}:11434/{path}"
     body = await request.body()
-    # Strip hop-by-hop headers that shouldn't be forwarded
     forward_headers = {
         k: v
         for k, v in request.headers.items()
@@ -68,8 +70,8 @@ async def proxy_to_vm(
                 params=dict(request.query_params),
             )
         except httpx.RequestError as exc:
-            logger.error("Proxy error for %s: %s", target_url, exc)
-            raise HTTPException(status_code=502, detail=f"Upstream error: {exc}") from exc
+            logger.error("Proxy error → %s: %s", target_url, exc)
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return Response(
         content=upstream.content,

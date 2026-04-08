@@ -6,13 +6,13 @@ variable "subscription_id" {
 variable "resource_group_name" {
   type        = string
   default     = "az-spot-orchestrator-rg"
-  description = "Name of the resource group for all control-plane resources"
+  description = "Resource group for all control-plane resources"
 }
 
 variable "location" {
   type        = string
   default     = "eastus"
-  description = "Azure region for the control-plane resources"
+  description = "Azure region for control-plane resources"
 }
 
 variable "environment" {
@@ -21,24 +21,12 @@ variable "environment" {
   description = "Environment tag applied to all resources"
 }
 
-variable "postgres_server_name" {
+variable "cosmos_account_name" {
   type        = string
-  description = "Globally unique name for the PostgreSQL Flexible Server"
-}
-
-variable "postgres_admin_user" {
-  type        = string
-  default     = "psqladmin"
-  description = "PostgreSQL administrator username"
-}
-
-variable "postgres_admin_password" {
-  type        = string
-  sensitive   = true
-  description = "PostgreSQL administrator password (min 8 chars, mixed case + digit + special)"
+  description = "Globally unique name for the Cosmos DB account (lowercase letters, digits, hyphens)"
 }
 
 variable "ssh_public_key" {
   type        = string
-  description = "SSH public key content for the control-plane VM admin user"
+  description = "SSH public key for the control-plane VM admin user"
 }

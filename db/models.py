@@ -1,12 +1,16 @@
+"""Domain models stored in Azure Cosmos DB.
+
+Each class maps 1-to-1 to a Cosmos container document.
+Pydantic v2 handles serialisation/deserialisation to/from the JSON dicts
+that the azure-cosmos SDK returns.
+"""
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Integer, String, func
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from pydantic import BaseModel, Field
 
 
 class VMStatus(str, Enum):
@@ -18,49 +22,31 @@ class VMStatus(str, Enum):
     terminated = "terminated"
 
 
-class Base(DeclarativeBase):
-    pass
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-class LLMModel(Base):
-    __tablename__ = "llm_models"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
-    description: Mapped[str | None] = mapped_column(String(1000))
-    size_mb: Mapped[int] = mapped_column(Integer, nullable=False)
-    # Ollama model tag, e.g. "llama3:8b" or "mistral:7b"
-    model_identifier: Mapped[str] = mapped_column(String(255), nullable=False)
-    vm_size: Mapped[str] = mapped_column(String(100), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
-    instances: Mapped[list[VMInstance]] = relationship(
-        "VMInstance", back_populates="model", cascade="all, delete-orphan"
-    )
+class LLMModel(BaseModel):
+    # `id` doubles as the Cosmos document id (partition key = /id)
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    description: str | None = None
+    size_mb: int
+    model_identifier: str   # Ollama tag, e.g. "llama3:8b"
+    vm_size: str
+    created_at: str = Field(default_factory=_now)
 
 
-class VMInstance(Base):
-    __tablename__ = "vm_instances"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    model_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("llm_models.id"), nullable=False
-    )
-    vm_name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
-    resource_group: Mapped[str] = mapped_column(String(255), nullable=False)
-    region: Mapped[str | None] = mapped_column(String(100))
-    ip_address: Mapped[str | None] = mapped_column(String(50))
-    status: Mapped[VMStatus] = mapped_column(
-        SAEnum(VMStatus), nullable=False, default=VMStatus.pending
-    )
-    workflow_id: Mapped[str | None] = mapped_column(String(255))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-    model: Mapped[LLMModel] = relationship("LLMModel", back_populates="instances")
+class VMInstance(BaseModel):
+    # `id` = vm_name so update_vm_status can do a direct point-read (no cross-partition needed)
+    id: str          # = vm_name
+    model_id: str
+    model_name: str  # denormalised — avoids a join when proxying requests
+    vm_name: str     # = id
+    resource_group: str
+    region: str | None = None
+    ip_address: str | None = None
+    status: VMStatus = VMStatus.pending
+    workflow_id: str | None = None
+    created_at: str = Field(default_factory=_now)
+    updated_at: str = Field(default_factory=_now)

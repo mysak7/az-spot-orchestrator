@@ -31,6 +31,54 @@ resource "azurerm_resource_group" "main" {
   }
 }
 
+# ── Azure Cosmos DB (serverless, replaces PostgreSQL) ─────────────────────────
+resource "azurerm_cosmosdb_account" "main" {
+  name                = var.cosmos_account_name
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  offer_type          = "Standard"
+  kind                = "GlobalDocumentDB"
+
+  consistency_policy {
+    consistency_level = "Session"
+  }
+
+  geo_location {
+    location          = azurerm_resource_group.main.location
+    failover_priority = 0
+  }
+
+  # Serverless — pay per request, no provisioned throughput needed for a control plane
+  capabilities {
+    name = "EnableServerless"
+  }
+}
+
+resource "azurerm_cosmosdb_sql_database" "main" {
+  name                = "az-spot-orchestrator"
+  resource_group_name = azurerm_resource_group.main.name
+  account_name        = azurerm_cosmosdb_account.main.name
+}
+
+resource "azurerm_cosmosdb_sql_container" "llm_models" {
+  name                = "llm_models"
+  resource_group_name = azurerm_resource_group.main.name
+  account_name        = azurerm_cosmosdb_account.main.name
+  database_name       = azurerm_cosmosdb_sql_database.main.name
+  partition_key_path  = "/id"
+}
+
+resource "azurerm_cosmosdb_sql_container" "vm_instances" {
+  name                = "vm_instances"
+  resource_group_name = azurerm_resource_group.main.name
+  account_name        = azurerm_cosmosdb_account.main.name
+  database_name       = azurerm_cosmosdb_sql_database.main.name
+  partition_key_path  = "/id"
+
+  # TTL for evicted/terminated instances: 30 days (optional, saves cost)
+  default_ttl = -1  # -1 = no automatic expiry; set to e.g. 2592000 for 30 days
+}
+
 # ── Control Plane Networking ───────────────────────────────────────────────────
 resource "azurerm_virtual_network" "control_plane" {
   name                = "az-spot-cp-vnet"
@@ -44,22 +92,6 @@ resource "azurerm_subnet" "control_plane" {
   resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.control_plane.name
   address_prefixes     = ["10.1.0.0/24"]
-}
-
-# PostgreSQL requires a delegated subnet
-resource "azurerm_subnet" "postgres" {
-  name                 = "postgres-subnet"
-  resource_group_name  = azurerm_resource_group.main.name
-  virtual_network_name = azurerm_virtual_network.control_plane.name
-  address_prefixes     = ["10.1.1.0/24"]
-
-  delegation {
-    name = "postgres-delegation"
-    service_delegation {
-      name    = "Microsoft.DBforPostgreSQL/flexibleServers"
-      actions = ["Microsoft.Network/virtualNetworks/subnets/join/action"]
-    }
-  }
 }
 
 resource "azurerm_network_security_group" "control_plane" {
@@ -107,42 +139,6 @@ resource "azurerm_network_security_group" "control_plane" {
 resource "azurerm_subnet_network_security_group_association" "control_plane" {
   subnet_id                 = azurerm_subnet.control_plane.id
   network_security_group_id = azurerm_network_security_group.control_plane.id
-}
-
-# ── PostgreSQL Flexible Server ─────────────────────────────────────────────────
-resource "azurerm_private_dns_zone" "postgres" {
-  name                = "${var.postgres_server_name}.private.postgres.database.azure.com"
-  resource_group_name = azurerm_resource_group.main.name
-}
-
-resource "azurerm_private_dns_zone_virtual_network_link" "postgres" {
-  name                  = "postgres-dns-link"
-  resource_group_name   = azurerm_resource_group.main.name
-  private_dns_zone_name = azurerm_private_dns_zone.postgres.name
-  virtual_network_id    = azurerm_virtual_network.control_plane.id
-}
-
-resource "azurerm_postgresql_flexible_server" "main" {
-  name                   = var.postgres_server_name
-  resource_group_name    = azurerm_resource_group.main.name
-  location               = azurerm_resource_group.main.location
-  version                = "15"
-  delegated_subnet_id    = azurerm_subnet.postgres.id
-  private_dns_zone_id    = azurerm_private_dns_zone.postgres.id
-  administrator_login    = var.postgres_admin_user
-  administrator_password = var.postgres_admin_password
-  zone                   = "1"
-  storage_mb             = 32768
-  sku_name               = "B_Standard_B1ms"
-
-  depends_on = [azurerm_private_dns_zone_virtual_network_link.postgres]
-}
-
-resource "azurerm_postgresql_flexible_server_database" "app" {
-  name      = "az_spot_orchestrator"
-  server_id = azurerm_postgresql_flexible_server.main.id
-  charset   = "UTF8"
-  collation = "en_US.utf8"
 }
 
 # ── Control Plane VM (stable, non-Spot) ───────────────────────────────────────
@@ -193,7 +189,7 @@ resource "azurerm_linux_virtual_machine" "control_plane" {
     version   = "latest"
   }
 
-  # Bootstrap: install Docker + Docker Compose, then pull and start the stack
+  # Bootstrap: install Docker + Compose, ready to `docker compose up`
   custom_data = base64encode(<<-EOT
     #!/bin/bash
     set -e

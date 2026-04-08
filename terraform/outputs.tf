@@ -3,23 +3,18 @@ output "control_plane_public_ip" {
   value       = azurerm_public_ip.control_plane.ip_address
 }
 
-output "postgres_fqdn" {
-  description = "PostgreSQL Flexible Server FQDN for DATABASE_URL"
-  value       = azurerm_postgresql_flexible_server.main.fqdn
+output "cosmos_endpoint" {
+  description = "Cosmos DB endpoint — set as COSMOS_ENDPOINT in .env"
+  value       = azurerm_cosmosdb_account.main.endpoint
+}
+
+output "cosmos_primary_key" {
+  description = "Cosmos DB primary key — set as COSMOS_KEY in .env"
+  value       = azurerm_cosmosdb_account.main.primary_key
+  sensitive   = true
 }
 
 output "resource_group_name" {
-  description = "Resource group that Temporal activities should target for Spot VM creation"
+  description = "Resource group for Spot VM provisioning (AZURE_RESOURCE_GROUP)"
   value       = azurerm_resource_group.main.name
-}
-
-output "database_url" {
-  description = "Full async DATABASE_URL for the application .env"
-  sensitive   = true
-  value = format(
-    "postgresql+asyncpg://%s:%s@%s/az_spot_orchestrator",
-    var.postgres_admin_user,
-    var.postgres_admin_password,
-    azurerm_postgresql_flexible_server.main.fqdn,
-  )
 }

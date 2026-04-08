@@ -1,11 +1,4 @@
-"""FastAPI application entrypoint.
-
-Exposes:
-  - /api/models   — Image Selector: register/query LLM models
-  - /api/vms      — VM lifecycle notifications (ready, evicted)
-  - /proxy        — Reverse proxy to active Spot VM
-  - /health       — Liveness probe
-"""
+"""FastAPI application entrypoint."""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -17,18 +10,17 @@ from temporalio.client import Client
 
 from api.routes import models, proxy
 from config import get_settings
-from db.session import create_tables
+from db.cosmos import setup_cosmos
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
-    await create_tables()
+    await setup_cosmos()
     app.state.temporal_client = await Client.connect(
         settings.temporal_host, namespace=settings.temporal_namespace
     )
     yield
-    # Temporal client has no explicit close in the Python SDK
 
 
 app = FastAPI(

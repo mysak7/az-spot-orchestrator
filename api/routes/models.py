@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
-from temporalio.client import Client
+from azure.core.exceptions import ResourceNotFoundError
+from fastapi import APIRouter, HTTPException, status
 
-from api.deps import DBSession, TemporalClient
+from api.deps import TemporalClient
 from config import get_settings
+from db.cosmos import get_instances_container, get_models_container
 from db.models import LLMModel, VMInstance, VMStatus
 from schemas.api import (
     LLMModelCreate,
@@ -28,40 +28,56 @@ router = APIRouter()
 # ── Model registration ─────────────────────────────────────────────────────────
 
 @router.post("/models", response_model=LLMModelResponse, status_code=status.HTTP_201_CREATED)
-async def create_model(payload: LLMModelCreate, db: DBSession) -> LLMModel:
-    """Register a new LLM model in the image selector."""
-    existing = await db.scalar(select(LLMModel).where(LLMModel.name == payload.name))
+async def create_model(payload: LLMModelCreate) -> LLMModelResponse:
+    container = get_models_container()
+
+    # Uniqueness check on `name`
+    existing = [
+        item
+        async for item in container.query_items(
+            query="SELECT c.id FROM c WHERE c.name = @name",
+            parameters=[{"name": "@name", "value": payload.name}],
+            enable_cross_partition_query=True,
+        )
+    ]
     if existing:
         raise HTTPException(status_code=409, detail=f"Model '{payload.name}' already registered")
 
     model = LLMModel(**payload.model_dump())
-    db.add(model)
-    await db.commit()
-    await db.refresh(model)
-    return model
+    await container.create_item(body=model.model_dump())
+    return LLMModelResponse(**model.model_dump())
 
 
 @router.get("/models", response_model=list[LLMModelResponse])
-async def list_models(db: DBSession) -> list[LLMModel]:
-    result = await db.execute(select(LLMModel).order_by(LLMModel.created_at.desc()))
-    return list(result.scalars().all())
+async def list_models() -> list[LLMModelResponse]:
+    container = get_models_container()
+    items = [
+        item
+        async for item in container.query_items(
+            query="SELECT * FROM c ORDER BY c.created_at DESC",
+            enable_cross_partition_query=True,
+        )
+    ]
+    return [LLMModelResponse(**item) for item in items]
 
 
 @router.get("/models/{model_id}", response_model=LLMModelResponse)
-async def get_model(model_id: uuid.UUID, db: DBSession) -> LLMModel:
-    model = await db.get(LLMModel, model_id)
-    if not model:
+async def get_model(model_id: str) -> LLMModelResponse:
+    container = get_models_container()
+    try:
+        item = await container.read_item(item=model_id, partition_key=model_id)
+    except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail="Model not found")
-    return model
+    return LLMModelResponse(**item)
 
 
 @router.delete("/models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_model(model_id: uuid.UUID, db: DBSession) -> None:
-    model = await db.get(LLMModel, model_id)
-    if not model:
+async def delete_model(model_id: str) -> None:
+    container = get_models_container()
+    try:
+        await container.delete_item(item=model_id, partition_key=model_id)
+    except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail="Model not found")
-    await db.delete(model)
-    await db.commit()
 
 
 # ── VM provisioning ────────────────────────────────────────────────────────────
@@ -72,47 +88,48 @@ async def delete_model(model_id: uuid.UUID, db: DBSession) -> None:
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def provision_model(
-    model_id: uuid.UUID,
+    model_id: str,
     payload: ProvisionRequest,
-    db: DBSession,
     temporal: TemporalClient,
 ) -> ProvisionResponse:
-    """Trigger a ProvisionVMWorkflow for the given model.
+    """Start a ProvisionVMWorkflow for the given model.
 
-    Creates a pending VMInstance record immediately and starts the Temporal
-    workflow asynchronously. The workflow updates the record as it progresses.
+    Creates a pending VMInstance document immediately so callers can poll
+    /instances for status. The workflow then updates it as it progresses.
     """
-    model = await db.get(LLMModel, model_id)
-    if not model:
+    models_container = get_models_container()
+    try:
+        model_item = await models_container.read_item(item=model_id, partition_key=model_id)
+    except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail="Model not found")
 
     settings = get_settings()
-    vm_size = payload.vm_size or model.vm_size
-    vm_name = f"spot-{model.name[:10]}-{uuid.uuid4().hex[:8]}"
+    vm_size = payload.vm_size or model_item["vm_size"]
+    vm_name = f"spot-{model_item['name'][:10]}-{uuid.uuid4().hex[:8]}"
     workflow_id = f"provision-{vm_name}"
-    resource_group = settings.azure_resource_group
 
-    # Create a pending record so callers can poll /instances immediately
+    # Create pending instance record
     instance = VMInstance(
-        id=uuid.uuid4(),
+        id=vm_name,
         model_id=model_id,
+        model_name=model_item["name"],
         vm_name=vm_name,
-        resource_group=resource_group,
+        resource_group=settings.azure_resource_group,
         status=VMStatus.pending,
         workflow_id=workflow_id,
     )
-    db.add(instance)
-    await db.commit()
+    instances_container = get_instances_container()
+    await instances_container.create_item(body=instance.model_dump())
 
     await temporal.start_workflow(
         ProvisionVMWorkflow.run,
         ProvisionVMInput(
-            model_id=str(model_id),
-            model_name=model.name,
-            model_identifier=model.model_identifier,
+            model_id=model_id,
+            model_name=model_item["name"],
+            model_identifier=model_item["model_identifier"],
             vm_size=vm_size,
             vm_name=vm_name,
-            resource_group=resource_group,
+            resource_group=settings.azure_resource_group,
         ),
         id=workflow_id,
         task_queue=settings.temporal_task_queue,
@@ -122,27 +139,33 @@ async def provision_model(
 
 
 @router.get("/models/{model_id}/instances", response_model=list[VMInstanceResponse])
-async def list_instances(model_id: uuid.UUID, db: DBSession) -> list[VMInstance]:
-    """Return all VM instances for a model, newest first."""
-    result = await db.execute(
-        select(VMInstance)
-        .where(VMInstance.model_id == model_id)
-        .order_by(VMInstance.created_at.desc())
-    )
-    return list(result.scalars().all())
+async def list_instances(model_id: str) -> list[VMInstanceResponse]:
+    container = get_instances_container()
+    items = [
+        item
+        async for item in container.query_items(
+            query="SELECT * FROM c WHERE c.model_id = @mid ORDER BY c.created_at DESC",
+            parameters=[{"name": "@mid", "value": model_id}],
+            enable_cross_partition_query=True,
+        )
+    ]
+    return [VMInstanceResponse(**item) for item in items]
 
 
-# ── VM lifecycle notifications (called by the Spot VM itself) ─────────────────
+# ── VM lifecycle notifications ────────────────────────────────────────────────
 
 @router.post("/vms/{vm_name}/ready", status_code=status.HTTP_200_OK)
-async def notify_vm_ready(vm_name: str, db: DBSession) -> dict:
-    """Cloud-init calls this endpoint after the model finishes downloading."""
-    instance = await db.scalar(select(VMInstance).where(VMInstance.vm_name == vm_name))
-    if not instance:
+async def notify_vm_ready(vm_name: str) -> dict:
+    """Cloud-init calls this after the model finishes downloading."""
+    container = get_instances_container()
+    try:
+        item = await container.read_item(item=vm_name, partition_key=vm_name)
+    except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail="VM not found")
 
-    instance.status = VMStatus.running
-    await db.commit()
+    item["status"] = VMStatus.running.value
+    item["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await container.replace_item(item=vm_name, body=item)
     return {"acknowledged": True}
 
 
@@ -150,51 +173,58 @@ async def notify_vm_ready(vm_name: str, db: DBSession) -> dict:
 async def notify_vm_evicted(
     vm_name: str,
     payload: VMEvictedNotification,
-    db: DBSession,
     temporal: TemporalClient,
 ) -> dict:
-    """Spot VM calls this endpoint on eviction (2-minute warning from Azure IMDS).
+    """Spot VM calls this on eviction (2-min Azure IMDS warning).
 
-    Marks the current instance as evicted and immediately triggers a new
-    ProvisionVMWorkflow so the model stays available with minimal downtime.
+    Marks the instance as evicted and triggers a new ProvisionVMWorkflow
+    so the model stays available with minimal downtime.
     """
-    instance = await db.scalar(select(VMInstance).where(VMInstance.vm_name == vm_name))
-    if not instance:
+    instances_container = get_instances_container()
+    try:
+        item = await instances_container.read_item(item=vm_name, partition_key=vm_name)
+    except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail="VM not found")
 
-    instance.status = VMStatus.evicted
-    await db.commit()
+    item["status"] = VMStatus.evicted.value
+    item["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await instances_container.replace_item(item=vm_name, body=item)
 
-    # Trigger re-provisioning for the same model
-    model = await db.get(LLMModel, instance.model_id)
-    if model:
-        settings = get_settings()
-        new_vm_name = f"spot-{model.name[:10]}-{uuid.uuid4().hex[:8]}"
-        workflow_id = f"provision-{new_vm_name}"
+    # Trigger re-provisioning
+    settings = get_settings()
+    models_container = get_models_container()
+    model_id = item["model_id"]
+    try:
+        model_item = await models_container.read_item(item=model_id, partition_key=model_id)
+    except ResourceNotFoundError:
+        return {"acknowledged": True, "re_provisioning": False}
 
-        new_instance = VMInstance(
-            id=uuid.uuid4(),
-            model_id=model.id,
+    new_vm_name = f"spot-{model_item['name'][:10]}-{uuid.uuid4().hex[:8]}"
+    workflow_id = f"provision-{new_vm_name}"
+
+    new_instance = VMInstance(
+        id=new_vm_name,
+        model_id=model_id,
+        model_name=model_item["name"],
+        vm_name=new_vm_name,
+        resource_group=settings.azure_resource_group,
+        status=VMStatus.pending,
+        workflow_id=workflow_id,
+    )
+    await instances_container.create_item(body=new_instance.model_dump())
+
+    await temporal.start_workflow(
+        ProvisionVMWorkflow.run,
+        ProvisionVMInput(
+            model_id=model_id,
+            model_name=model_item["name"],
+            model_identifier=model_item["model_identifier"],
+            vm_size=model_item["vm_size"],
             vm_name=new_vm_name,
             resource_group=settings.azure_resource_group,
-            status=VMStatus.pending,
-            workflow_id=workflow_id,
-        )
-        db.add(new_instance)
-        await db.commit()
+        ),
+        id=workflow_id,
+        task_queue=settings.temporal_task_queue,
+    )
 
-        await temporal.start_workflow(
-            ProvisionVMWorkflow.run,
-            ProvisionVMInput(
-                model_id=str(model.id),
-                model_name=model.name,
-                model_identifier=model.model_identifier,
-                vm_size=model.vm_size,
-                vm_name=new_vm_name,
-                resource_group=settings.azure_resource_group,
-            ),
-            id=workflow_id,
-            task_queue=settings.temporal_task_queue,
-        )
-
-    return {"acknowledged": True, "re_provisioning": model is not None}
+    return {"acknowledged": True, "re_provisioning": True, "new_vm_name": new_vm_name}

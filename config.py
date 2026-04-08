@@ -8,8 +8,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    # Database
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/az_spot_orchestrator"
+    # Azure Cosmos DB (app state store)
+    cosmos_endpoint: str = ""
+    cosmos_key: str = ""
 
     # Azure service principal
     azure_subscription_id: str = ""
@@ -19,7 +20,7 @@ class Settings(BaseSettings):
     azure_resource_group: str = "az-spot-orchestrator-rg"
     azure_ssh_public_key: str = ""
 
-    # Temporal
+    # Temporal (dev server uses SQLite — no external DB needed)
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"
     temporal_task_queue: str = "vm-provisioning"
