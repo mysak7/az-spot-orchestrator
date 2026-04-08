@@ -6,6 +6,13 @@ terraform {
     }
   }
   required_version = ">= 1.3.0"
+
+  backend "azurerm" {
+    resource_group_name  = "az-spot-tfstate-rg"
+    storage_account_name = "azspottfstate"
+    container_name       = "tfstate"
+    key                  = "az-spot-orchestrator.tfstate"
+  }
 }
 
 provider "azurerm" {
