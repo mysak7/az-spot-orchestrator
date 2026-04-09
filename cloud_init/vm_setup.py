@@ -37,8 +37,11 @@ def generate_cloud_init(
         runcmd:
           - mkdir -p /mnt/resource/models
 
-          # Install Ollama
+          # Install Ollama (creates the 'ollama' system user)
           - curl -fsSL https://ollama.ai/install.sh | sh
+
+          # Grant the ollama user ownership of the model directory
+          - chown -R ollama:ollama /mnt/resource/models
 
           # Override Ollama service to use temp disk and listen on all interfaces
           - mkdir -p /etc/systemd/system/ollama.service.d
