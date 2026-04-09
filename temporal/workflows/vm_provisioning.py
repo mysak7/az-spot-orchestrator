@@ -8,6 +8,7 @@ from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from config import get_settings
@@ -52,8 +53,8 @@ class ProvisionVMWorkflow:
     async def run(self, input: ProvisionVMInput) -> ProvisionVMResult:
         settings = get_settings()
 
-        # ── Step 1: cheapest region ────────────────────────────────────────
-        region: str = await workflow.execute_activity(
+        # ── Step 1: regions ordered cheapest-first ────────────────────────
+        regions: list[str] = await workflow.execute_activity(
             get_cheapest_region,
             GetCheapestRegionInput(
                 vm_size=input.vm_size,
@@ -63,44 +64,80 @@ class ProvisionVMWorkflow:
             retry_policy=_FAST_RETRY,
         )
 
-        # ── Step 2: provision VM ───────────────────────────────────────────
+        # ── Step 2: provision VM, falling back through regions on SkuNotAvailable ──
         cloud_init_b64 = generate_cloud_init(
             model_identifier=input.model_identifier,
             control_plane_url=settings.control_plane_url,
             vm_name=input.vm_name,
         )
 
-        try:
-            ip_address: str = await workflow.execute_activity(
-                provision_azure_vm,
-                ProvisionAzureVMInput(
-                    vm_name=input.vm_name,
-                    resource_group=input.resource_group,
-                    region=region,
-                    vm_size=input.vm_size,
-                    model_identifier=input.model_identifier,
-                    cloud_init_b64=cloud_init_b64,
-                ),
-                start_to_close_timeout=timedelta(minutes=15),
-                retry_policy=_SLOW_RETRY,
-            )
-        except Exception:
-            # Provision failed — clean up any partially created resources
-            await workflow.execute_activity(
-                delete_azure_vm,
-                DeleteAzureVMInput(
-                    vm_name=input.vm_name,
-                    resource_group=input.resource_group,
-                ),
-                start_to_close_timeout=timedelta(minutes=10),
-                retry_policy=_FAST_RETRY,
-            )
+        ip_address: str = ""
+        region: str = ""
+        last_error: BaseException | None = None
+
+        for candidate in regions:
+            try:
+                ip_address = await workflow.execute_activity(
+                    provision_azure_vm,
+                    ProvisionAzureVMInput(
+                        vm_name=input.vm_name,
+                        resource_group=input.resource_group,
+                        region=candidate,
+                        vm_size=input.vm_size,
+                        model_identifier=input.model_identifier,
+                        cloud_init_b64=cloud_init_b64,
+                    ),
+                    start_to_close_timeout=timedelta(minutes=15),
+                    retry_policy=RetryPolicy(maximum_attempts=1),
+                )
+                region = candidate
+                break
+            except ActivityError as exc:
+                if isinstance(exc.__cause__, ApplicationError) and exc.__cause__.type == "SkuNotAvailable":
+                    workflow.logger.warning(
+                        "No Spot capacity for %s in %s, trying next region",
+                        input.vm_size,
+                        candidate,
+                    )
+                    # Clean up partial resources before trying next region
+                    await workflow.execute_activity(
+                        delete_azure_vm,
+                        DeleteAzureVMInput(
+                            vm_name=input.vm_name,
+                            resource_group=input.resource_group,
+                        ),
+                        start_to_close_timeout=timedelta(minutes=10),
+                        retry_policy=_FAST_RETRY,
+                    )
+                    last_error = exc
+                    continue
+                # Non-capacity failure: clean up and abort
+                await workflow.execute_activity(
+                    delete_azure_vm,
+                    DeleteAzureVMInput(
+                        vm_name=input.vm_name,
+                        resource_group=input.resource_group,
+                    ),
+                    start_to_close_timeout=timedelta(minutes=10),
+                    retry_policy=_FAST_RETRY,
+                )
+                await workflow.execute_activity(
+                    update_vm_status,
+                    UpdateVMStatusInput(vm_name=input.vm_name, status="terminated"),
+                    start_to_close_timeout=timedelta(minutes=2),
+                )
+                raise
+
+        if not ip_address:
             await workflow.execute_activity(
                 update_vm_status,
                 UpdateVMStatusInput(vm_name=input.vm_name, status="terminated"),
                 start_to_close_timeout=timedelta(minutes=2),
             )
-            raise
+            raise RuntimeError(
+                f"No region had Spot capacity for {input.vm_size}. "
+                f"Tried: {regions}"
+            ) from last_error
 
         # ── Step 3: mark provisioning ──────────────────────────────────────
         await workflow.execute_activity(

@@ -8,8 +8,9 @@ import asyncio
 import logging
 
 import httpx
-from azure.core.exceptions import ResourceNotFoundError
+from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from config import get_settings
 from services.azure_client import compute_client, network_client
@@ -26,39 +27,57 @@ _PRICING_URL = "https://prices.azure.com/api/retail/prices"
 
 
 @activity.defn
-async def get_cheapest_region(input: GetCheapestRegionInput) -> str:
-    """Query Azure Retail Prices API and return the candidate region with the lowest Spot price."""
+async def get_cheapest_region(input: GetCheapestRegionInput) -> list[str]:
+    """Query Azure Retail Prices API and return candidate regions ordered cheapest-first.
+
+    Regions with no pricing data (e.g. VM doesn't support Spot) are appended at the
+    end so the caller can still fall back to them.
+    """
     prices: dict[str, float] = {}
 
+    # Azure Retail Prices API uses priceType='Consumption' for Spot VMs;
+    # Spot prices have "Spot" or "Low Priority" in the skuName.
     params = {
         "api-version": "2023-01-01-preview",
         "$filter": (
-            f"priceType eq 'Spot' and armSkuName eq '{input.vm_size}'"
+            f"priceType eq 'Consumption' and armSkuName eq '{input.vm_size}'"
             f" and currencyCode eq 'USD'"
         ),
     }
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(_PRICING_URL, params=params)
-        resp.raise_for_status()
-        for item in resp.json().get("Items", []):
-            region: str = item.get("armRegionName", "")
-            price: float = item.get("retailPrice", float("inf"))
-            if region in input.candidate_regions:
-                if region not in prices or price < prices[region]:
-                    prices[region] = price
+        if resp.status_code == 200:
+            for item in resp.json().get("Items", []):
+                sku_name: str = item.get("skuName", "")
+                if "Spot" not in sku_name and "Low Priority" not in sku_name:
+                    continue  # skip on-demand / reservation rows
+                region: str = item.get("armRegionName", "")
+                price: float = item.get("retailPrice", float("inf"))
+                if region in input.candidate_regions:
+                    if region not in prices or price < prices[region]:
+                        prices[region] = price
+        else:
+            logger.warning(
+                "Azure Pricing API returned %s for %s",
+                resp.status_code,
+                input.vm_size,
+            )
 
-    if not prices:
-        logger.warning(
-            "No spot pricing found for %s; defaulting to %s",
-            input.vm_size,
-            input.candidate_regions[0],
-        )
-        return input.candidate_regions[0]
+    # Regions with known prices, sorted cheapest first
+    priced = sorted(prices, key=lambda r: prices[r])
+    for r, p in [(r, prices[r]) for r in priced]:
+        logger.info("Spot price for %s in %s: $%.4f/hr", input.vm_size, r, p)
 
-    cheapest = min(prices, key=lambda r: prices[r])
-    logger.info("Cheapest region for %s: %s ($%.4f/hr)", input.vm_size, cheapest, prices[cheapest])
-    return cheapest
+    # Append candidate regions without pricing data as fallbacks
+    unpriced = [r for r in input.candidate_regions if r not in prices]
+    ordered = priced + unpriced
+
+    if not ordered:
+        ordered = list(input.candidate_regions)
+
+    logger.info("Region order for %s: %s", input.vm_size, ordered)
+    return ordered
 
 
 @activity.defn
@@ -132,10 +151,8 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
                     "subnets": [
                         {
                             "name": subnet_name,
-                            "properties": {
-                                "address_prefix": "10.0.0.0/24",
-                                "network_security_group": {"id": nsg.id},
-                            },
+                            "address_prefix": "10.0.0.0/24",
+                            "network_security_group": {"id": nsg.id},
                         }
                     ],
                 },
@@ -173,51 +190,60 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
         nic = await nic_poller.result()
 
         # ── Spot VM ───────────────────────────────────────────────────────
-        vm_poller = await comp.virtual_machines.begin_create_or_update(
-            input.resource_group,
-            input.vm_name,
-            {
-                "location": input.region,
-                "hardware_profile": {"vm_size": input.vm_size},
-                "storage_profile": {
-                    "image_reference": {
-                        "publisher": "Canonical",
-                        "offer": "0001-com-ubuntu-server-jammy",
-                        "sku": "22_04-lts",
-                        "version": "latest",
-                    },
-                    "os_disk": {
-                        "create_option": "FromImage",
-                        "managed_disk": {"storage_account_type": "Premium_LRS"},
-                        "delete_option": "Delete",
-                    },
-                },
-                "os_profile": {
-                    "computer_name": input.vm_name[:15],
-                    "admin_username": "azureuser",
-                    "linux_configuration": {
-                        "disable_password_authentication": True,
-                        "ssh": {
-                            "public_keys": [
-                                {
-                                    "path": "/home/azureuser/.ssh/authorized_keys",
-                                    "key_data": settings.azure_ssh_public_key,
-                                }
-                            ]
+        try:
+            vm_poller = await comp.virtual_machines.begin_create_or_update(
+                input.resource_group,
+                input.vm_name,
+                {
+                    "location": input.region,
+                    "hardware_profile": {"vm_size": input.vm_size},
+                    "storage_profile": {
+                        "image_reference": {
+                            "publisher": "Canonical",
+                            "offer": "0001-com-ubuntu-server-jammy",
+                            "sku": "22_04-lts",
+                            "version": "latest",
+                        },
+                        "os_disk": {
+                            "create_option": "FromImage",
+                            "managed_disk": {"storage_account_type": "StandardSSD_LRS"},
+                            "delete_option": "Delete",
                         },
                     },
-                    "custom_data": input.cloud_init_b64,
+                    "os_profile": {
+                        "computer_name": input.vm_name[:15],
+                        "admin_username": "azureuser",
+                        "linux_configuration": {
+                            "disable_password_authentication": True,
+                            "ssh": {
+                                "public_keys": [
+                                    {
+                                        "path": "/home/azureuser/.ssh/authorized_keys",
+                                        "key_data": settings.azure_ssh_public_key,
+                                    }
+                                ]
+                            },
+                        },
+                        "custom_data": input.cloud_init_b64,
+                    },
+                    "network_profile": {
+                        "network_interfaces": [{"id": nic.id, "primary": True}]
+                    },
+                    # Spot configuration
+                    "priority": "Spot",
+                    "eviction_policy": "Deallocate",
+                    "billing_profile": {"max_price": -1},  # pay market rate
                 },
-                "network_profile": {
-                    "network_interfaces": [{"id": nic.id, "primary": True}]
-                },
-                # Spot configuration
-                "priority": "Spot",
-                "eviction_policy": "Deallocate",
-                "billing_profile": {"max_price": -1},  # pay market rate
-            },
-        )
-        await vm_poller.result()
+            )
+            await vm_poller.result()
+        except ResourceExistsError as exc:
+            if exc.error and exc.error.code == "SkuNotAvailable":
+                raise ApplicationError(
+                    f"No Spot capacity for {input.vm_size} in {input.region}",
+                    type="SkuNotAvailable",
+                    non_retryable=True,
+                ) from exc
+            raise
 
         # Fetch the allocated public IP (may differ from creation response)
         pip_info = await net.public_ip_addresses.get(input.resource_group, pip_name)
@@ -281,10 +307,20 @@ async def delete_azure_vm(input: DeleteAzureVMInput) -> None:
             (net.network_interfaces.begin_delete, nic_name),
             (net.public_ip_addresses.begin_delete, pip_name),
         ]:
-            try:
-                poller = await delete_fn(input.resource_group, name)
-                await poller.result()
-            except ResourceNotFoundError:
-                pass
+            for _attempt in range(4):
+                try:
+                    poller = await delete_fn(input.resource_group, name)
+                    await poller.result()
+                    break
+                except ResourceNotFoundError:
+                    break
+                except Exception as exc:
+                    if "NicReservedForAnotherVm" in str(exc):
+                        logger.warning(
+                            "NIC %s is still reserved; waiting 180 s before retry", name
+                        )
+                        await asyncio.sleep(180)
+                    else:
+                        raise
 
     logger.info("Deleted VM %s and associated resources", input.vm_name)
