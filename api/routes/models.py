@@ -37,7 +37,6 @@ async def create_model(payload: LLMModelCreate) -> LLMModelResponse:
         async for item in container.query_items(
             query="SELECT c.id FROM c WHERE c.name = @name",
             parameters=[{"name": "@name", "value": payload.name}],
-            enable_cross_partition_query=True,
         )
     ]
     if existing:
@@ -55,7 +54,6 @@ async def list_models() -> list[LLMModelResponse]:
         item
         async for item in container.query_items(
             query="SELECT * FROM c ORDER BY c.created_at DESC",
-            enable_cross_partition_query=True,
         )
     ]
     return [LLMModelResponse(**item) for item in items]
@@ -146,7 +144,6 @@ async def list_instances(model_id: str) -> list[VMInstanceResponse]:
         async for item in container.query_items(
             query="SELECT * FROM c WHERE c.model_id = @mid ORDER BY c.created_at DESC",
             parameters=[{"name": "@mid", "value": model_id}],
-            enable_cross_partition_query=True,
         )
     ]
     return [VMInstanceResponse(**item) for item in items]

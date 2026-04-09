@@ -41,7 +41,6 @@ async def proxy_to_vm(model_name: str, path: str, request: Request) -> Response:
                 {"name": "@mn", "value": model_name},
                 {"name": "@st", "value": VMStatus.running.value},
             ],
-            enable_cross_partition_query=True,
         )
     ]
 
