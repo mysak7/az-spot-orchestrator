@@ -1,6 +1,6 @@
 variable "location" {
   type        = string
-  default     = "polandcentral"
+  default     = "swedencentral"
   description = "Azure region for control-plane resources"
 }
 
