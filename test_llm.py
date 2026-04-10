@@ -3,6 +3,7 @@
 and print the response.  Requires the FastAPI server to be running."""
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import sys
@@ -10,12 +11,13 @@ import time
 
 import httpx
 
-BASE_URL = "http://localhost:8000"
+DEFAULT_BASE_URL = "http://localhost:8000"
 MODEL_NAME = "llama3-8b"          # model_name as registered in /api/models
 PROMPT = "In one sentence, what is the capital of France?"
 
 
-async def main() -> None:
+async def main(base_url: str) -> None:
+    BASE_URL = base_url.rstrip("/")
     print(f"Target : {BASE_URL}/proxy/{MODEL_NAME}/v1/chat/completions")
     print(f"Prompt : {PROMPT}\n")
 
@@ -86,4 +88,11 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Smoke-test the LLM proxy")
+    parser.add_argument(
+        "--url",
+        default=DEFAULT_BASE_URL,
+        help=f"Base URL of the control plane (default: {DEFAULT_BASE_URL})",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(args.url))
