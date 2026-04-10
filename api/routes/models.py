@@ -149,6 +149,21 @@ async def list_instances(model_id: str) -> list[VMInstanceResponse]:
     return [VMInstanceResponse(**item) for item in items]
 
 
+# ── All instances (dashboard) ─────────────────────────────────────────────────
+
+@router.get("/instances", response_model=list[VMInstanceResponse])
+async def list_all_instances() -> list[VMInstanceResponse]:
+    """Return every VM instance across all models, newest first."""
+    container = get_instances_container()
+    items = [
+        item
+        async for item in container.query_items(
+            query="SELECT * FROM c ORDER BY c.created_at DESC",
+        )
+    ]
+    return [VMInstanceResponse(**item) for item in items]
+
+
 # ── VM lifecycle notifications ────────────────────────────────────────────────
 
 @router.post("/vms/{vm_name}/ready", status_code=status.HTTP_200_OK)

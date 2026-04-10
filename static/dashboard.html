@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Azure Spot LLM Orchestrator</title>
+<style>
+  :root {
+    --bg:        #0d1117;
+    --surface:   #161b22;
+    --border:    #30363d;
+    --text:      #e6edf3;
+    --muted:     #8b949e;
+    --blue:      #388bfd;
+    --green:     #3fb950;
+    --yellow:    #d29922;
+    --orange:    #f0883e;
+    --red:       #f85149;
+    --gray:      #484f58;
+    --radius:    6px;
+    --font:      -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  /* ── Layout ── */
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 16px 32px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  header h1 { font-size: 16px; font-weight: 600; }
+  header .subtitle { color: var(--muted); font-size: 12px; }
+
+  .refresh-indicator {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .pulse {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  main { padding: 32px; max-width: 1400px; margin: 0 auto; }
+
+  section { margin-bottom: 40px; }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .section-header h2 { font-size: 16px; font-weight: 600; }
+
+  .count-badge {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 1px 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  /* ── Buttons ── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    font-size: 13px;
+    font-family: var(--font);
+    cursor: pointer;
+    transition: opacity 0.15s, background 0.15s;
+    text-decoration: none;
+  }
+
+  .btn:hover { opacity: 0.85; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .btn-primary  { background: var(--blue);  border-color: var(--blue);  color: #fff; }
+  .btn-success  { background: var(--green); border-color: var(--green); color: #fff; }
+  .btn-danger   { background: transparent; border-color: var(--red);   color: var(--red); }
+  .btn-ghost    { background: transparent; color: var(--text); }
+
+  /* ── Cards / Table ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  table { width: 100%; border-collapse: collapse; }
+
+  th {
+    text-align: left;
+    padding: 10px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+
+  tr:last-child td { border-bottom: none; }
+
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  .empty-row td {
+    text-align: center;
+    color: var(--muted);
+    padding: 32px;
+  }
+
+  .mono { font-family: "SF Mono", "Fira Code", monospace; font-size: 12px; }
+  .muted { color: var(--muted); }
+  .actions { display: flex; gap: 6px; }
+
+  /* ── Status badges ── */
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .badge-pending      { background: rgba(72,79,88,0.3);   color: #8b949e; border: 1px solid #484f58; }
+  .badge-provisioning { background: rgba(56,139,253,0.15); color: #79c0ff; border: 1px solid #388bfd; }
+  .badge-downloading  { background: rgba(210,153,34,0.15); color: #e3b341; border: 1px solid #d29922; }
+  .badge-running      { background: rgba(63,185,80,0.15);  color: #56d364; border: 1px solid #3fb950; }
+  .badge-evicted      { background: rgba(248,81,73,0.15);  color: #ff7b72; border: 1px solid #f85149; }
+  .badge-terminated   { background: rgba(72,79,88,0.15);   color: #6e7681; border: 1px solid #30363d; }
+
+  /* ── Modal / Form ── */
+  .modal-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .modal-backdrop.open { display: flex; }
+
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    width: 480px;
+    max-width: 95vw;
+  }
+
+  .modal h3 { font-size: 16px; margin-bottom: 20px; }
+
+  .form-group { margin-bottom: 16px; }
+
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: var(--text);
+  }
+
+  label .hint { font-weight: 400; color: var(--muted); margin-left: 4px; }
+
+  input, textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    padding: 7px 10px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  input:focus, textarea:focus { border-color: var(--blue); }
+
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 24px;
+  }
+
+  /* ── Toast ── */
+  #toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 16px;
+    font-size: 13px;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.2s, transform 0.2s;
+    z-index: 200;
+    max-width: 340px;
+  }
+
+  #toast.show { opacity: 1; transform: translateY(0); }
+  #toast.error { border-color: var(--red); color: var(--red); }
+  #toast.success { border-color: var(--green); color: var(--green); }
+
+  /* ── Status dot in instances ── */
+  .ip-cell { font-family: "SF Mono", "Fira Code", monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#388bfd" stroke-width="2">
+    <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+  </svg>
+  <div>
+    <h1>Azure Spot LLM Orchestrator</h1>
+    <div class="subtitle">Control plane dashboard</div>
+  </div>
+  <div class="refresh-indicator">
+    <div class="pulse"></div>
+    <span id="refresh-label">Refreshing…</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- ── Models ─────────────────────────────────────────────────────────────── -->
+  <section>
+    <div class="section-header">
+      <h2>Registered Models</h2>
+      <span class="count-badge" id="models-count">–</span>
+      <button class="btn btn-primary" style="margin-left:auto" onclick="openRegisterModal()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+        Register Model
+      </button>
+    </div>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Description</th>
+            <th>Size</th>
+            <th>Ollama Tag</th>
+            <th>VM SKU</th>
+            <th>Registered</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="models-tbody">
+          <tr class="empty-row"><td colspan="7">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── VM Instances ───────────────────────────────────────────────────────── -->
+  <section>
+    <div class="section-header">
+      <h2>VM Instances</h2>
+      <span class="count-badge" id="instances-count">–</span>
+    </div>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>VM Name</th>
+            <th>Model</th>
+            <th>Status</th>
+            <th>Region</th>
+            <th>IP Address</th>
+            <th>Workflow</th>
+            <th>Last Updated</th>
+          </tr>
+        </thead>
+        <tbody id="instances-tbody">
+          <tr class="empty-row"><td colspan="7">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<!-- ── Register Model Modal ──────────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="register-modal" onclick="handleBackdropClick(event)">
+  <div class="modal">
+    <h3>Register New Model</h3>
+    <form id="register-form" onsubmit="submitRegister(event)">
+
+      <div class="form-group">
+        <label>Name <span class="hint">— URL-safe slug, e.g. llama3-8b</span></label>
+        <input type="text" name="name" required pattern="[a-z0-9][a-z0-9\-]*" placeholder="llama3-8b">
+      </div>
+
+      <div class="form-group">
+        <label>Description <span class="hint">— optional</span></label>
+        <input type="text" name="description" placeholder="LLaMA 3 8B instruct">
+      </div>
+
+      <div class="form-group">
+        <label>Ollama Tag <span class="hint">— e.g. llama3:8b</span></label>
+        <input type="text" name="model_identifier" required placeholder="llama3:8b">
+      </div>
+
+      <div class="form-group">
+        <label>Size <span class="hint">— approximate weights in MB</span></label>
+        <input type="number" name="size_mb" required min="1" placeholder="4800">
+      </div>
+
+      <div class="form-group">
+        <label>VM SKU <span class="hint">— Azure VM size</span></label>
+        <input type="text" name="vm_size" required value="Standard_NC4as_T4_v3">
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeRegisterModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="register-submit-btn">Register</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Toast ─────────────────────────────────────────────────────────────────── -->
+<div id="toast"></div>
+
+<script>
+  const API = '';  // same origin
+  let _models = [];
+
+  // ── Toast ──────────────────────────────────────────────────────────────────
+  let toastTimer;
+  function toast(msg, type = 'success') {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = `show ${type}`;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.className = ''; }, 3500);
+  }
+
+  // ── Fetch helpers ──────────────────────────────────────────────────────────
+  async function apiFetch(path, opts = {}) {
+    const res = await fetch(API + path, {
+      headers: { 'Content-Type': 'application/json' },
+      ...opts,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `HTTP ${res.status}`);
+    }
+    if (res.status === 204) return null;
+    return res.json();
+  }
+
+  // ── Utilities ──────────────────────────────────────────────────────────────
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+  }
+
+  function fmtSize(mb) {
+    return mb >= 1024 ? `${(mb/1024).toFixed(1)} GB` : `${mb} MB`;
+  }
+
+  function statusBadge(status) {
+    const cls = {
+      pending: 'badge-pending',
+      provisioning: 'badge-provisioning',
+      downloading: 'badge-downloading',
+      running: 'badge-running',
+      evicted: 'badge-evicted',
+      terminated: 'badge-terminated',
+    }[status] || 'badge-pending';
+    return `<span class="badge ${cls}">${status}</span>`;
+  }
+
+  function esc(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── Render Models ──────────────────────────────────────────────────────────
+  function renderModels(models) {
+    _models = models;
+    const tbody = document.getElementById('models-tbody');
+    document.getElementById('models-count').textContent = models.length;
+
+    if (!models.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">No models registered yet</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = models.map(m => `
+      <tr>
+        <td><strong>${esc(m.name)}</strong></td>
+        <td class="muted">${esc(m.description || '—')}</td>
+        <td class="mono">${fmtSize(m.size_mb)}</td>
+        <td class="mono">${esc(m.model_identifier)}</td>
+        <td class="mono muted">${esc(m.vm_size)}</td>
+        <td class="muted">${fmtDate(m.created_at)}</td>
+        <td>
+          <div class="actions">
+            <button class="btn btn-success" onclick="provisionModel('${esc(m.id)}','${esc(m.name)}')">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 3l14 9-14 9V3z"/></svg>
+              Provision
+            </button>
+            <button class="btn btn-danger" onclick="deleteModel('${esc(m.id)}','${esc(m.name)}')">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+              Delete
+            </button>
+          </div>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  // ── Render Instances ───────────────────────────────────────────────────────
+  function renderInstances(instances) {
+    const tbody = document.getElementById('instances-tbody');
+    document.getElementById('instances-count').textContent = instances.length;
+
+    if (!instances.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">No VM instances yet — provision a model to get started</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = instances.map(i => `
+      <tr>
+        <td class="mono">${esc(i.vm_name)}</td>
+        <td><strong>${esc(i.model_name)}</strong></td>
+        <td>${statusBadge(i.status)}</td>
+        <td class="muted">${esc(i.region || '—')}</td>
+        <td class="ip-cell">${i.ip_address
+          ? `<a href="http://${esc(i.ip_address)}:11434" target="_blank" style="color:var(--blue);text-decoration:none">${esc(i.ip_address)}</a>`
+          : '<span class="muted">—</span>'
+        }</td>
+        <td class="mono muted" style="font-size:11px">${i.workflow_id
+          ? `<a href="http://localhost:8080/namespaces/default/workflows/${esc(i.workflow_id)}" target="_blank" style="color:var(--blue);text-decoration:none">${esc(i.workflow_id.slice(0,28))}…</a>`
+          : '—'
+        }</td>
+        <td class="muted">${fmtDate(i.updated_at)}</td>
+      </tr>
+    `).join('');
+  }
+
+  // ── Data loading ───────────────────────────────────────────────────────────
+  async function refresh() {
+    try {
+      const [models, instances] = await Promise.all([
+        apiFetch('/api/models'),
+        apiFetch('/api/instances'),
+      ]);
+      renderModels(models);
+      renderInstances(instances);
+      document.getElementById('refresh-label').textContent =
+        'Updated ' + new Date().toLocaleTimeString();
+    } catch (err) {
+      document.getElementById('refresh-label').textContent = 'Error: ' + err.message;
+    }
+  }
+
+  // ── Actions ────────────────────────────────────────────────────────────────
+  async function provisionModel(id, name) {
+    if (!confirm(`Provision a new Spot VM for model "${name}"?`)) return;
+    try {
+      const res = await apiFetch(`/api/models/${id}/provision`, { method: 'POST', body: '{}' });
+      toast(`Provisioning started: ${res.vm_name}`, 'success');
+      refresh();
+    } catch (err) {
+      toast(`Provision failed: ${err.message}`, 'error');
+    }
+  }
+
+  async function deleteModel(id, name) {
+    if (!confirm(`Delete model "${name}"? This does NOT stop running VMs.`)) return;
+    try {
+      await apiFetch(`/api/models/${id}`, { method: 'DELETE' });
+      toast(`Model "${name}" deleted`, 'success');
+      refresh();
+    } catch (err) {
+      toast(`Delete failed: ${err.message}`, 'error');
+    }
+  }
+
+  // ── Register Modal ─────────────────────────────────────────────────────────
+  function openRegisterModal() {
+    document.getElementById('register-form').reset();
+    document.getElementById('register-modal').classList.add('open');
+    document.querySelector('#register-form input[name=name]').focus();
+  }
+
+  function closeRegisterModal() {
+    document.getElementById('register-modal').classList.remove('open');
+  }
+
+  function handleBackdropClick(e) {
+    if (e.target === document.getElementById('register-modal')) closeRegisterModal();
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeRegisterModal();
+  });
+
+  async function submitRegister(e) {
+    e.preventDefault();
+    const btn = document.getElementById('register-submit-btn');
+    btn.disabled = true;
+    btn.textContent = 'Registering…';
+
+    const fd = new FormData(e.target);
+    const payload = {
+      name: fd.get('name'),
+      description: fd.get('description') || null,
+      model_identifier: fd.get('model_identifier'),
+      size_mb: parseInt(fd.get('size_mb'), 10),
+      vm_size: fd.get('vm_size'),
+    };
+
+    try {
+      const m = await apiFetch('/api/models', { method: 'POST', body: JSON.stringify(payload) });
+      toast(`Model "${m.name}" registered`, 'success');
+      closeRegisterModal();
+      refresh();
+    } catch (err) {
+      toast(`Registration failed: ${err.message}`, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Register';
+    }
+  }
+
+  // ── Boot ───────────────────────────────────────────────────────────────────
+  refresh();
+  setInterval(refresh, 5000);
+</script>
+</body>
+</html>

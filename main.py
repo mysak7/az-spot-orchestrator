@@ -6,6 +6,8 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from temporalio.client import Client
 
 from api.routes import models, proxy
@@ -42,6 +44,13 @@ app.add_middleware(
 
 app.include_router(models.router, prefix="/api", tags=["models"])
 app.include_router(proxy.router, tags=["proxy"])
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse("/static/dashboard.html")
 
 
 @app.get("/health", tags=["ops"])
