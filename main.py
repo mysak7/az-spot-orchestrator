@@ -12,13 +12,14 @@ from temporalio.client import Client
 
 from api.routes import models, proxy
 from config import get_settings
-from db.cosmos import setup_cosmos
+from db.cosmos import seed_default_models, setup_cosmos
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
     await setup_cosmos()
+    await seed_default_models()
     app.state.temporal_client = await Client.connect(
         settings.temporal_host, namespace=settings.temporal_namespace
     )

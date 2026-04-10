@@ -1,8 +1,32 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+@dataclass
+class DefaultModel:
+    """A model that should be seeded into the registry on startup if absent."""
+    name: str
+    model_identifier: str
+    size_mb: int
+    vm_size: str
+    description: str | None = None
+
+
+# Models automatically registered on first startup.
+# Add new entries here to ensure they survive redeployments.
+DEFAULT_MODELS: list[DefaultModel] = [
+    DefaultModel(
+        name="qwen25-1b5",
+        model_identifier="qwen2.5:1.5b",
+        size_mb=934,
+        vm_size="Standard_NC4as_T4_v3",
+        description="Qwen 2.5 1.5B – lightweight general-purpose model",
+    ),
+]
 
 
 class Settings(BaseSettings):
