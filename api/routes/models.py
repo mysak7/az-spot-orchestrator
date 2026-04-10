@@ -19,8 +19,8 @@ from schemas.api import (
     VMEvictedNotification,
     VMInstanceResponse,
 )
-from temporal.types import ProvisionVMInput
-from temporal.workflows.vm_provisioning import ProvisionVMWorkflow
+from temporal.types import DeleteAzureVMInput, ProvisionVMInput
+from temporal.workflows.vm_provisioning import DeleteVMWorkflow, ProvisionVMWorkflow
 
 router = APIRouter()
 
@@ -186,6 +186,21 @@ async def notify_vm_evicted(
     item["status"] = VMStatus.evicted.value
     item["updated_at"] = datetime.now(timezone.utc).isoformat()
     await instances_container.replace_item(item=vm_name, body=item)
+
+    # Delete the old VM's Azure resources so they stop consuming Spot vCPU quota
+    settings = get_settings()
+    try:
+        await temporal.start_workflow(
+            DeleteVMWorkflow.run,
+            DeleteAzureVMInput(
+                vm_name=vm_name,
+                resource_group=item.get("resource_group", settings.azure_resource_group),
+            ),
+            id=f"delete-{vm_name}",
+            task_queue=settings.temporal_task_queue,
+        )
+    except Exception:
+        pass  # best-effort; re-provisioning is more important
 
     # Trigger re-provisioning
     settings = get_settings()

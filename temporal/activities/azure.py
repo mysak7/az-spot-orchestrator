@@ -238,9 +238,10 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
             await vm_poller.result()
         except (ResourceExistsError, HttpResponseError) as exc:
             err_code = getattr(exc.error, "code", None) if hasattr(exc, "error") else None
-            if err_code == "SkuNotAvailable":
+            # Treat both capacity-unavailable and quota-exceeded as "try next region"
+            if err_code in ("SkuNotAvailable", "OperationNotAllowed"):
                 raise ApplicationError(
-                    f"No Spot capacity for {input.vm_size} in {input.region}",
+                    f"No Spot capacity for {input.vm_size} in {input.region}: {err_code}",
                     type="SkuNotAvailable",
                     non_retryable=True,
                 ) from exc

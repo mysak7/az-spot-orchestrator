@@ -36,6 +36,24 @@ _SLOW_RETRY = RetryPolicy(maximum_attempts=2, initial_interval=timedelta(seconds
 
 
 @workflow.defn
+class DeleteVMWorkflow:
+    """Delete an evicted Spot VM and its Azure resources (NIC, public IP).
+
+    Used after eviction to release Spot vCPU quota so the next provision
+    attempt succeeds.
+    """
+
+    @workflow.run
+    async def run(self, input: DeleteAzureVMInput) -> None:
+        await workflow.execute_activity(
+            delete_azure_vm,
+            input,
+            start_to_close_timeout=timedelta(minutes=15),
+            retry_policy=_FAST_RETRY,
+        )
+
+
+@workflow.defn
 class ProvisionVMWorkflow:
     """Orchestrate provisioning a Spot VM and waiting for the model to be ready.
 
