@@ -1,6 +1,6 @@
 CONTROL_PLANE_IP ?= $(shell cd terraform && terraform output -raw control_plane_public_ip 2>/dev/null)
 SSH_USER         ?= azureuser
-API_URL          ?= http://$(CONTROL_PLANE_IP):8000
+API_URL          ?= http://$(CONTROL_PLANE_IP)
 
 .PHONY: setup deploy model-register model-provision model-status help
 

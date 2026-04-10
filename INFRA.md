@@ -15,11 +15,12 @@
 
 | Service | URL |
 |---|---|
-| API | http://74.241.243.18:8000 |
-| API docs | http://74.241.243.18:8000/docs |
+| Dashboard | http://74.241.243.18/ |
+| API | http://74.241.243.18/api |
+| API docs | http://74.241.243.18/docs |
 | Temporal UI | http://74.241.243.18:8080 |
 
-> Access restricted to `78.80.157.131` (NSG rules on ports 22, 8000, 8080).
+> Access restricted to `78.80.157.131` (NSG rules on ports 22, 80, 8080).
 
 ## Azure Resources
 
@@ -45,7 +46,7 @@
 | Rule | Port | Source |
 |---|---|---|
 | allow-ssh | 22 | 78.80.157.131 |
-| allow-api | 8000 | 78.80.157.131 |
+| allow-api | 80 | 78.80.157.131 |
 | allow-temporal-ui | 8080 | 78.80.157.131 |
 
 ## Deployment commands
@@ -75,7 +76,7 @@ make setup
 Key variables:
 
 ```
-CONTROL_PLANE_URL=http://74.241.243.18:8000
+CONTROL_PLANE_URL=http://74.241.243.18
 AZURE_RESOURCE_GROUP=az-spot-orchestrator-rg
 COSMOS_ENDPOINT=https://az-spot-orchestrator.documents.azure.com:443/
 TEMPORAL_HOST=localhost:7233

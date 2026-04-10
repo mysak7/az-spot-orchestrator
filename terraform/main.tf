@@ -126,7 +126,7 @@ resource "azurerm_network_security_group" "main" {
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_range     = "8000"
+    destination_port_range     = "80"
     source_address_prefix      = "78.80.157.131"
     destination_address_prefix = "*"
   }
