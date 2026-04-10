@@ -10,6 +10,8 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -48,5 +50,22 @@ class VMInstance(BaseModel):
     ip_address: str | None = None
     status: VMStatus = VMStatus.pending
     workflow_id: str | None = None
+    created_at: str = Field(default_factory=_now)
+    updated_at: str = Field(default_factory=_now)
+
+
+class ModelCacheEntry(BaseModel):
+    # `id` = "{model_identifier_sanitized}-{region}" for direct point-read
+    id: str
+    model_identifier: str  # e.g. "qwen2.5:1.5b"
+    region: str            # e.g. "eastus"
+    blob_name: str         # e.g. "eastus/qwen2.5-1.5b.tar.gz"
+    size_bytes: int = 0
+    status: Literal["uploading", "available", "failed"] = "uploading"
+    upload_started_at: str
+    upload_completed_at: str | None = None
+    upload_duration_seconds: float | None = None
+    last_download_duration_seconds: float | None = None
+    download_count: int = 0
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)

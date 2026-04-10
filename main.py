@@ -10,7 +10,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from temporalio.client import Client
 
-from api.routes import models, proxy
+from api.routes import models, proxy, storage
 from config import get_settings
 from db.cosmos import seed_default_models, setup_cosmos
 
@@ -45,6 +45,7 @@ app.add_middleware(
 
 app.include_router(models.router, prefix="/api", tags=["models"])
 app.include_router(proxy.router, tags=["proxy"])
+app.include_router(storage.router, prefix="/api", tags=["storage"])
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

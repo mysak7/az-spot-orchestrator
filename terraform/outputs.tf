@@ -18,3 +18,14 @@ output "resource_group_name" {
   description = "Resource group for Spot VM provisioning — set as AZURE_RESOURCE_GROUP in .env"
   value       = azurerm_resource_group.main.name
 }
+
+output "storage_account_name" {
+  description = "Storage account for model cache — set as AZURE_STORAGE_ACCOUNT_NAME in .env"
+  value       = azurerm_storage_account.model_cache.name
+}
+
+output "storage_account_key" {
+  description = "Storage account key for model cache — set as AZURE_STORAGE_ACCOUNT_KEY in .env"
+  value       = azurerm_storage_account.model_cache.primary_access_key
+  sensitive   = true
+}

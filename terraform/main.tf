@@ -87,6 +87,34 @@ resource "azurerm_cosmosdb_sql_container" "vm_instances" {
   default_ttl = -1
 }
 
+resource "azurerm_cosmosdb_sql_container" "model_cache" {
+  name                = "model-cache"
+  resource_group_name = azurerm_resource_group.main.name
+  account_name        = azurerm_cosmosdb_account.main.name
+  database_name       = azurerm_cosmosdb_sql_database.main.name
+  partition_key_paths = ["/id"]
+}
+
+# ── Azure Blob Storage (model cache) ───────────────────────────────────────────
+resource "azurerm_storage_account" "model_cache" {
+  name                     = "azspotmodelcache"
+  resource_group_name      = azurerm_resource_group.main.name
+  location                 = azurerm_resource_group.main.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+
+  tags = {
+    project = local.project
+    env     = var.environment
+  }
+}
+
+resource "azurerm_storage_container" "model_cache" {
+  name                  = "model-cache"
+  storage_account_id    = azurerm_storage_account.model_cache.id
+  container_access_type = "private"
+}
+
 # ── Control Plane Networking ───────────────────────────────────────────────────
 resource "azurerm_virtual_network" "main" {
   name                = "${local.project}-vnet"
