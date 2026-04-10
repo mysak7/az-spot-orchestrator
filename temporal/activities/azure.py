@@ -211,7 +211,7 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
                         },
                     },
                     "os_profile": {
-                        "computer_name": input.vm_name[:15],
+                        "computer_name": input.vm_name[:15].rstrip('-'),
                         "admin_username": "azureuser",
                         "linux_configuration": {
                             "disable_password_authentication": True,

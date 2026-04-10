@@ -103,7 +103,7 @@ async def provision_model(
 
     settings = get_settings()
     vm_size = payload.vm_size or model_item["vm_size"]
-    vm_name = f"spot-{model_item['name'][:10]}-{uuid.uuid4().hex[:8]}"
+    vm_name = f"spot-{model_item['name'][:10].rstrip('-')}-{uuid.uuid4().hex[:8]}"
     workflow_id = f"provision-{vm_name}"
 
     # Create pending instance record
@@ -226,7 +226,7 @@ async def notify_vm_evicted(
     except ResourceNotFoundError:
         return {"acknowledged": True, "re_provisioning": False}
 
-    new_vm_name = f"spot-{model_item['name'][:10]}-{uuid.uuid4().hex[:8]}"
+    new_vm_name = f"spot-{model_item['name'][:10].rstrip('-')}-{uuid.uuid4().hex[:8]}"
     workflow_id = f"provision-{new_vm_name}"
 
     new_instance = VMInstance(
