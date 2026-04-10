@@ -11,8 +11,9 @@ import time
 
 import httpx
 
-DEFAULT_BASE_URL = "http://localhost:8000"
-MODEL_NAME = "llama3-8b"          # model_name as registered in /api/models
+DEFAULT_BASE_URL = "http://74.241.243.18:8000"
+MODEL_NAME = "qwen2-5-1-5b"       # model_name as registered in /api/models
+OLLAMA_MODEL = "qwen2.5:1.5b"     # Ollama tag sent in the request body
 PROMPT = "In one sentence, what is the capital of France?"
 
 
@@ -22,7 +23,7 @@ async def main(base_url: str) -> None:
     print(f"Prompt : {PROMPT}\n")
 
     payload = {
-        "model": MODEL_NAME,
+        "model": OLLAMA_MODEL,
         "messages": [{"role": "user", "content": PROMPT}],
         "stream": False,
     }
