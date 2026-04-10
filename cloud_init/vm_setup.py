@@ -34,6 +34,56 @@ def generate_cloud_init(
 
         # Azure Linux VMs mount the temp disk at /mnt/resource by default.
         # We create a sub-directory there for Ollama model weights.
+        write_files:
+          - path: /usr/local/bin/eviction-monitor.sh
+            permissions: '0755'
+            content: |
+              #!/bin/bash
+              # Poll Azure IMDS scheduledevents every 15 s.
+              # When a Preempt event is detected, notify the control plane so it
+              # can provision a replacement VM before this one disappears.
+              IMDS_URL="http://169.254.169.254/metadata/scheduledevents?api-version=2020-07-01"
+              CONTROL_PLANE="{control_plane_url}"
+              VM_NAME="{vm_name}"
+              NOTIFIED=0
+
+              while true; do
+                EVENTS=$(curl -sf -H "Metadata: true" "$IMDS_URL" 2>/dev/null)
+                if [ $? -eq 0 ] && [ $NOTIFIED -eq 0 ]; then
+                  EVENT_TYPE=$(echo "$EVENTS" | python3 -c "
+              import sys, json
+              data = json.load(sys.stdin)
+              for e in data.get('Events', []):
+                  if e.get('EventType') == 'Preempt':
+                      print('Preempt')
+                      break
+              " 2>/dev/null)
+                  if [ "$EVENT_TYPE" = "Preempt" ]; then
+                    curl -sf -X POST "$CONTROL_PLANE/api/vms/$VM_NAME/evicted" \
+                      -H "Content-Type: application/json" \
+                      -d '{{"reason":"spot_preempt"}}' || true
+                    NOTIFIED=1
+                  fi
+                fi
+                sleep 15
+              done
+
+          - path: /etc/systemd/system/eviction-monitor.service
+            content: |
+              [Unit]
+              Description=Azure Spot eviction monitor
+              After=network-online.target
+              Wants=network-online.target
+
+              [Service]
+              Type=simple
+              ExecStart=/usr/local/bin/eviction-monitor.sh
+              Restart=always
+              RestartSec=5
+
+              [Install]
+              WantedBy=multi-user.target
+
         runcmd:
           - mkdir -p /mnt/resource/models
 
@@ -51,6 +101,11 @@ def generate_cloud_init(
           - systemctl daemon-reload
           - systemctl enable ollama
           - systemctl start ollama
+
+          # Start eviction monitor before model pull so evictions during download
+          # are also caught and reported to the control plane.
+          - systemctl enable eviction-monitor
+          - systemctl start eviction-monitor
 
           # Wait for Ollama to accept connections (up to 5 min)
           - |
