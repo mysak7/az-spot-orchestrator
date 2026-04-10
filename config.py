@@ -26,6 +26,13 @@ DEFAULT_MODELS: list[DefaultModel] = [
         vm_size="Standard_NC4as_T4_v3",
         description="Qwen 2.5 1.5B – lightweight general-purpose model",
     ),
+    DefaultModel(
+        name="qwen25-3b-instruct",
+        model_identifier="qwen2.5:3b",
+        size_mb=1900,
+        vm_size="Standard_D2s_v3",
+        description="Qwen 2.5 3B Instruct – CPU inference, 8 GB RAM",
+    ),
 ]
 
 
