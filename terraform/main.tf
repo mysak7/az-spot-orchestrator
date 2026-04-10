@@ -111,7 +111,7 @@ resource "azurerm_storage_account" "model_cache" {
 
 resource "azurerm_storage_container" "model_cache" {
   name                  = "model-cache"
-  storage_account_id    = azurerm_storage_account.model_cache.id
+  storage_account_name  = azurerm_storage_account.model_cache.name
   container_access_type = "private"
 }
 
