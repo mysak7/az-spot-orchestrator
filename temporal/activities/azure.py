@@ -8,7 +8,7 @@ import asyncio
 import logging
 
 import httpx
-from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
+from azure.core.exceptions import HttpResponseError, ResourceExistsError, ResourceNotFoundError
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
@@ -236,8 +236,9 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
                 },
             )
             await vm_poller.result()
-        except ResourceExistsError as exc:
-            if exc.error and exc.error.code == "SkuNotAvailable":
+        except (ResourceExistsError, HttpResponseError) as exc:
+            err_code = getattr(exc.error, "code", None) if hasattr(exc, "error") else None
+            if err_code == "SkuNotAvailable":
                 raise ApplicationError(
                     f"No Spot capacity for {input.vm_size} in {input.region}",
                     type="SkuNotAvailable",
