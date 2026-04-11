@@ -114,52 +114,55 @@ def generate_cloud_init(
               sleep 10
             done
 
-          # Get best source for model (blob or Ollama) from control plane
+          # Get best source for model (blob or Ollama) from control plane.
+          # Query Azure IMDS for actual VM region (avoids hard-coding).
           - |
-            export VM_REGION="{{{{ REGION }}}}"
+            export VM_REGION=$(curl -sf -H "Metadata: true" \
+              "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-02-01&format=text" \
+              2>/dev/null || echo "")
             export SOURCE_RESP=$(curl -sf "{control_plane_url}/api/storage/cache/source?model_identifier={model_identifier}&region=$VM_REGION" 2>/dev/null || echo "{{}}")
             export SOURCE=$(echo "$SOURCE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('source','ollama'))" 2>/dev/null || echo "ollama")
+            export DOWNLOAD_URL=$(echo "$SOURCE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('download_url',''))" 2>/dev/null || echo "")
+            export UPLOAD_URL=$(echo "$SOURCE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('upload_url',''))" 2>/dev/null || echo "")
+            export SOURCE_REGION=$(echo "$SOURCE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('source_region',''))" 2>/dev/null || echo "")
 
           # If model is cached in blob storage, download and import it
           - |
-            if [ "$SOURCE" != "ollama" ]; then
+            BLOB_DOWNLOADED=0
+            if [ "$SOURCE" != "ollama" ] && [ -n "$DOWNLOAD_URL" ]; then
               echo "=== Model cache source: $SOURCE ==="
-              DOWNLOAD_URL=$(echo "$SOURCE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('download_url',''))" 2>/dev/null || echo "")
-              UPLOAD_URL=$(echo "$SOURCE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('upload_url',''))" 2>/dev/null || echo "")
-              SOURCE_REGION=$(echo "$SOURCE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('source_region',''))" 2>/dev/null || echo "")
-
-              if [ -n "$DOWNLOAD_URL" ]; then
-                echo "Downloading model from $SOURCE_REGION..."
-                START=$(date +%s)
-                if curl -sf -o /tmp/model.tar.gz "$DOWNLOAD_URL"; then
-                  echo "Extracting model..."
-                  tar -xzf /tmp/model.tar.gz -C /mnt/resource/ || true
-                  rm -f /tmp/model.tar.gz
-                  echo "Model extracted. Restarting Ollama..."
-                  systemctl restart ollama
-                  sleep 10
-                  END=$(date +%s)
-                  DURATION=$((END - START))
-                  echo "Download and import took $DURATION seconds"
-                  # Log download timing
-                  curl -sf -X POST "{control_plane_url}/api/storage/cache/download-log" \
-                    -H "Content-Type: application/json" \
-                    -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"source_region\\":\\"$SOURCE_REGION\\",\\"duration_seconds\\":$DURATION}}" 2>/dev/null || true
-                  exit 0
-                fi
+              echo "Downloading model from $SOURCE_REGION..."
+              START=$(date +%s)
+              if curl -sf -o /tmp/model.tar.gz "$DOWNLOAD_URL"; then
+                echo "Extracting model..."
+                tar -xzf /tmp/model.tar.gz -C /mnt/resource/ || true
+                rm -f /tmp/model.tar.gz
+                echo "Model extracted. Restarting Ollama..."
+                systemctl restart ollama
+                sleep 10
+                END=$(date +%s)
+                DURATION=$((END - START))
+                echo "Download and import took $DURATION seconds"
+                # Log download timing
+                curl -sf -X POST "{control_plane_url}/api/storage/cache/download-log" \
+                  -H "Content-Type: application/json" \
+                  -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"source_region\\":\\"$SOURCE_REGION\\",\\"duration_seconds\\":$DURATION}}" 2>/dev/null || true
+                BLOB_DOWNLOADED=1
               fi
             fi
 
           # Fallback: pull model from Ollama and upload to blob
           - |
-            echo "=== Pulling model from Ollama ==="
-            if ! ollama pull {model_identifier}; then
-              echo "ERROR: Model pull failed"
-              exit 1
+            if [ "$BLOB_DOWNLOADED" = "0" ]; then
+              echo "=== Pulling model from Ollama ==="
+              if ! ollama pull {model_identifier}; then
+                echo "ERROR: Model pull failed"
+                exit 1
+              fi
             fi
 
-            # Upload model to blob storage for caching
-            if [ -n "$UPLOAD_URL" ]; then
+            # Upload model to blob storage for caching (only after Ollama pull)
+            if [ -n "$UPLOAD_URL" ] && [ "$BLOB_DOWNLOADED" = "0" ]; then
               echo "Uploading model to blob storage..."
               # Install azcopy for large file uploads
               (
