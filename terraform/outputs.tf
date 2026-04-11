@@ -29,3 +29,18 @@ output "storage_account_key" {
   value       = azurerm_storage_account.model_cache.primary_access_key
   sensitive   = true
 }
+
+output "github_actions_client_id" {
+  description = "AZURE_CLIENT_ID — set automatically in GitHub Actions variables by make oidc-setup"
+  value       = azuread_application.github_actions.client_id
+}
+
+output "github_actions_tenant_id" {
+  description = "AZURE_TENANT_ID — set automatically in GitHub Actions variables by make oidc-setup"
+  value       = data.azurerm_client_config.current.tenant_id
+}
+
+output "github_actions_subscription_id" {
+  description = "AZURE_SUBSCRIPTION_ID — set automatically in GitHub Actions variables by make oidc-setup"
+  value       = data.azurerm_subscription.current.subscription_id
+}
