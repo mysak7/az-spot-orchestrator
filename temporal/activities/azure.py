@@ -302,9 +302,9 @@ async def delete_azure_vm(input: DeleteAzureVMInput) -> None:
         except ResourceNotFoundError:
             pass
 
-        for delete_fn, name in [  # type: ignore[list-item]
-            (net.network_interfaces.begin_delete, nic_name),
-            (net.public_ip_addresses.begin_delete, pip_name),
+        for delete_fn, name in [
+            (net.network_interfaces.begin_delete, nic_name),  # type: ignore[list-item]
+            (net.public_ip_addresses.begin_delete, pip_name),  # type: ignore[list-item]
         ]:
             for _attempt in range(4):
                 try:
