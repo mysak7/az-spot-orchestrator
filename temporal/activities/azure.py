@@ -2,6 +2,7 @@
 
 All network / Azure SDK calls live here so the Workflow remains deterministic.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -100,7 +101,7 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
 
     async with network_client() as net, compute_client() as comp:
         # ── NSG (shared per region) ────────────────────────────────────────
-        nsg_poller = await net.network_security_groups.begin_create_or_update(
+        nsg_poller = await net.network_security_groups.begin_create_or_update(  # type: ignore[call-overload]
             input.resource_group,
             nsg_name,
             {
@@ -142,7 +143,7 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
             vnet = await net.virtual_networks.get(input.resource_group, vnet_name)
             subnet = next(s for s in (vnet.subnets or []) if s.name == subnet_name)
         except (ResourceNotFoundError, StopIteration):
-            vnet_poller = await net.virtual_networks.begin_create_or_update(
+            vnet_poller = await net.virtual_networks.begin_create_or_update(  # type: ignore[call-overload]
                 input.resource_group,
                 vnet_name,
                 {
@@ -161,7 +162,7 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
             subnet = (vnet.subnets or [])[0]
 
         # ── Public IP ─────────────────────────────────────────────────────
-        pip_poller = await net.public_ip_addresses.begin_create_or_update(
+        pip_poller = await net.public_ip_addresses.begin_create_or_update(  # type: ignore[call-overload]
             input.resource_group,
             pip_name,
             {
@@ -173,7 +174,7 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
         pip = await pip_poller.result()
 
         # ── NIC ───────────────────────────────────────────────────────────
-        nic_poller = await net.network_interfaces.begin_create_or_update(
+        nic_poller = await net.network_interfaces.begin_create_or_update(  # type: ignore[call-overload]
             input.resource_group,
             nic_name,
             {
@@ -191,7 +192,7 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
 
         # ── Spot VM ───────────────────────────────────────────────────────
         try:
-            vm_poller = await comp.virtual_machines.begin_create_or_update(
+            vm_poller = await comp.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]
                 input.resource_group,
                 input.vm_name,
                 {
@@ -211,7 +212,7 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
                         },
                     },
                     "os_profile": {
-                        "computer_name": input.vm_name[:15].rstrip('-'),
+                        "computer_name": input.vm_name[:15].rstrip("-"),
                         "admin_username": "azureuser",
                         "linux_configuration": {
                             "disable_password_authentication": True,
@@ -226,9 +227,7 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
                         },
                         "custom_data": input.cloud_init_b64,
                     },
-                    "network_profile": {
-                        "network_interfaces": [{"id": nic.id, "primary": True}]
-                    },
+                    "network_profile": {"network_interfaces": [{"id": nic.id, "primary": True}]},
                     # Spot configuration
                     "priority": "Spot",
                     "eviction_policy": "Deallocate",
@@ -269,14 +268,14 @@ async def wait_for_model_ready(input: WaitForModelInput) -> None:
         while elapsed < deadline_s:
             activity.heartbeat(f"elapsed={elapsed}s ip={input.ip_address}")
             try:
-                resp = await client.get(
-                    f"http://{input.ip_address}:11434/api/tags"
-                )
+                resp = await client.get(f"http://{input.ip_address}:11434/api/tags")
                 if resp.status_code == 200:
                     loaded = [m["name"] for m in resp.json().get("models", [])]
                     base = input.model_identifier.split(":")[0]
                     if any(base in name for name in loaded):
-                        logger.info("Model %s ready on %s", input.model_identifier, input.ip_address)
+                        logger.info(
+                            "Model %s ready on %s", input.model_identifier, input.ip_address
+                        )
                         return
             except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError):
                 pass  # VM still booting / Ollama not yet up
@@ -298,14 +297,12 @@ async def delete_azure_vm(input: DeleteAzureVMInput) -> None:
     async with compute_client() as comp, network_client() as net:
         # Delete VM first (NIC/PIP cannot be deleted while attached)
         try:
-            poller = await comp.virtual_machines.begin_delete(
-                input.resource_group, input.vm_name
-            )
+            poller = await comp.virtual_machines.begin_delete(input.resource_group, input.vm_name)
             await poller.result()
         except ResourceNotFoundError:
             pass
 
-        for delete_fn, name in [
+        for delete_fn, name in [  # type: ignore[list-item]
             (net.network_interfaces.begin_delete, nic_name),
             (net.public_ip_addresses.begin_delete, pip_name),
         ]:
@@ -318,9 +315,7 @@ async def delete_azure_vm(input: DeleteAzureVMInput) -> None:
                     break
                 except Exception as exc:
                     if "NicReservedForAnotherVm" in str(exc):
-                        logger.warning(
-                            "NIC %s is still reserved; waiting 180 s before retry", name
-                        )
+                        logger.warning("NIC %s is still reserved; waiting 180 s before retry", name)
                         await asyncio.sleep(180)
                     else:
                         raise

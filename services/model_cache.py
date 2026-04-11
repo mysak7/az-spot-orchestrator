@@ -3,13 +3,13 @@
 Manages finding and generating SAS URLs for cached models, tracking
 upload/download statistics, and selecting the best source region.
 """
+
 from __future__ import annotations
 
 import logging
 import math
 import re
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from azure.storage.blob import BlobSasPermissions, generate_blob_sas
@@ -23,14 +23,14 @@ logger = logging.getLogger(__name__)
 
 # Geographic coordinates (lat, lon) for Azure regions to determine proximity
 _REGION_COORDS: dict[str, tuple[float, float]] = {
-    "eastus": (37.8, -74.0),          # Virginia
-    "westus2": (47.3, -119.9),        # Washington
-    "eastus2": (36.7, -77.5),         # Virginia
-    "westeurope": (52.3, 4.8),        # Amsterdam
-    "northeurope": (60.5, 13.0),      # Dublin/Stockholm area
-    "southeastasia": (1.4, 103.8),    # Singapore
+    "eastus": (37.8, -74.0),  # Virginia
+    "westus2": (47.3, -119.9),  # Washington
+    "eastus2": (36.7, -77.5),  # Virginia
+    "westeurope": (52.3, 4.8),  # Amsterdam
+    "northeurope": (60.5, 13.0),  # Dublin/Stockholm area
+    "southeastasia": (1.4, 103.8),  # Singapore
     "australiaeast": (-33.8, 151.2),  # Sydney
-    "japaneast": (35.6, 139.7),       # Tokyo
+    "japaneast": (35.6, 139.7),  # Tokyo
 }
 
 
@@ -63,7 +63,7 @@ def _generate_sas_url(
         blob_name=blob_name,
         account_key=s.azure_storage_account_key,
         permission=perms,
-        expiry=datetime.now(timezone.utc) + timedelta(hours=expiry_hours),
+        expiry=datetime.now(UTC) + timedelta(hours=expiry_hours),
     )
     account_url = f"https://{s.azure_storage_account_name}.blob.core.windows.net"
     return f"{account_url}/{s.azure_storage_container_name}/{blob_name}?{sas}"
@@ -112,7 +112,7 @@ async def get_best_source(
     logger.info("Finding best source for model %s in region %s", model_identifier, vm_region)
 
     # Query all available (uploaded) cache entries for this model
-    query = f"SELECT * FROM c WHERE c.model_identifier = @model_id AND c.status = @status"
+    query = "SELECT * FROM c WHERE c.model_identifier = @model_id AND c.status = @status"
     items = []
     async for item in container.query_items(
         query=query,
@@ -182,7 +182,7 @@ async def register_upload_complete(
 ) -> None:
     """Register that a model has been successfully uploaded to blob storage."""
     container = get_cache_container()
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     entry = ModelCacheEntry(
         id=f"{_sanitize_identifier(model_identifier)}-{region}",
         model_identifier=model_identifier,
@@ -220,7 +220,7 @@ async def update_download_stats(
         entry = ModelCacheEntry(**item)
         entry.last_download_duration_seconds = download_duration_seconds
         entry.download_count += 1
-        entry.updated_at = datetime.now(timezone.utc).isoformat()
+        entry.updated_at = datetime.now(UTC).isoformat()
         await container.upsert_item(entry.model_dump())
         logger.info(
             "Updated download stats for %s from %s: %.1fs (count=%d)",

@@ -5,6 +5,7 @@ A single CosmosClient is created lazily and reused across requests.
 containers exist.  `seed_default_models()` then upserts any models listed in
 `config.DEFAULT_MODELS` that are not yet registered.
 """
+
 from __future__ import annotations
 
 import logging

@@ -4,8 +4,8 @@ from pydantic import BaseModel, Field
 
 from db.models import VMStatus
 
-
 # ── LLM Model ─────────────────────────────────────────────────────────────────
+
 
 class LLMModelCreate(BaseModel):
     name: str = Field(
@@ -36,6 +36,7 @@ class LLMModelResponse(BaseModel):
 
 # ── VM Instance ────────────────────────────────────────────────────────────────
 
+
 class VMInstanceResponse(BaseModel):
     id: str
     model_id: str
@@ -52,6 +53,7 @@ class VMInstanceResponse(BaseModel):
 
 # ── Provisioning ──────────────────────────────────────────────────────────────
 
+
 class ProvisionRequest(BaseModel):
     vm_size: str | None = Field(
         None, description="Override the model's default VM size for this run"
@@ -66,14 +68,17 @@ class ProvisionResponse(BaseModel):
 
 # ── VM Lifecycle Notifications ────────────────────────────────────────────────
 
+
 class VMEvictedNotification(BaseModel):
     reason: str | None = None
 
 
 # ── Model Cache ────────────────────────────────────────────────────────────────────
 
+
 class CacheSourceResponse(BaseModel):
     """Response for GET /api/storage/cache/source — tells VM where to get the model."""
+
     source: str  # "blob_same_region" | "blob_cross_region" | "ollama"
     download_url: str | None = None  # SAS URL to download from blob (if blob source)
     upload_url: str  # SAS URL to upload to blob (for subsequent upload or Ollama fallback)
@@ -82,6 +87,7 @@ class CacheSourceResponse(BaseModel):
 
 class CacheCompleteRequest(BaseModel):
     """Request body for POST /api/storage/cache/complete — VM registers upload."""
+
     model_identifier: str
     region: str
     size_bytes: int
@@ -90,6 +96,7 @@ class CacheCompleteRequest(BaseModel):
 
 class DownloadLogRequest(BaseModel):
     """Request body for POST /api/storage/cache/download-log — VM logs download timing."""
+
     model_identifier: str
     region: str
     source_region: str
@@ -98,6 +105,7 @@ class DownloadLogRequest(BaseModel):
 
 class ModelCacheEntryResponse(BaseModel):
     """Response for GET /api/storage/cache — list of cached models."""
+
     id: str
     model_identifier: str
     region: str

@@ -8,6 +8,7 @@ The cloud-init script:
   3. Pulls the requested model via a one-shot systemd service.
   4. Notifies the control plane when the model is ready.
 """
+
 from __future__ import annotations
 
 import base64

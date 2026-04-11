@@ -1,8 +1,9 @@
 """Factories for authenticated Azure Blob Storage async client."""
+
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from azure.storage.blob.aio import BlobServiceClient
 

@@ -1,8 +1,9 @@
 """Factories for authenticated Azure SDK async clients."""
+
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from azure.identity.aio import ClientSecretCredential
 from azure.mgmt.compute.aio import ComputeManagementClient

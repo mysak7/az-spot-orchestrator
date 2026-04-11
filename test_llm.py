@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """Quick smoke-test: send a chat request through the control-plane proxy
 and print the response.  Requires the FastAPI server to be running."""
+
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 import time
 
 import httpx
 
 DEFAULT_BASE_URL = "http://74.241.243.18"
-MODEL_NAME = "qwen2-5-1-5b"       # model_name as registered in /api/models
-OLLAMA_MODEL = "qwen2.5:1.5b"     # Ollama tag sent in the request body
+MODEL_NAME = "qwen2-5-1-5b"  # model_name as registered in /api/models
+OLLAMA_MODEL = "qwen2.5:1.5b"  # Ollama tag sent in the request body
 PROMPT = "In one sentence, what is the capital of France?"
 
 
@@ -43,13 +43,13 @@ async def main(base_url: str) -> None:
         models = instances_resp.json() if instances_resp.status_code == 200 else []
         model_entry = next((m for m in models if m["name"] == MODEL_NAME), None)
         if model_entry:
-            inst_resp = await client.get(
-                f"{BASE_URL}/api/models/{model_entry['id']}/instances"
-            )
+            inst_resp = await client.get(f"{BASE_URL}/api/models/{model_entry['id']}/instances")
             instances = inst_resp.json() if inst_resp.status_code == 200 else []
             running = [i for i in instances if i["status"] == "running"]
             if running:
-                print(f"[OK] Running instance: {running[0]['vm_name']} @ {running[0].get('ip_address')} ({running[0].get('region')})")
+                print(
+                    f"[OK] Running instance: {running[0]['vm_name']} @ {running[0].get('ip_address')} ({running[0].get('region')})"
+                )
             else:
                 statuses = [i["status"] for i in instances] or ["none"]
                 print(f"[WARN] No running instance found (statuses: {statuses})")
@@ -76,16 +76,14 @@ async def main(base_url: str) -> None:
         sys.exit(1)
 
     data = resp.json()
-    reply = (
-        data.get("choices", [{}])[0]
-        .get("message", {})
-        .get("content", "<no content>")
-    )
+    reply = data.get("choices", [{}])[0].get("message", {}).get("content", "<no content>")
     usage = data.get("usage", {})
 
     print(f"Reply       : {reply}")
     if usage:
-        print(f"Tokens      : prompt={usage.get('prompt_tokens')}  completion={usage.get('completion_tokens')}  total={usage.get('total_tokens')}")
+        print(
+            f"Tokens      : prompt={usage.get('prompt_tokens')}  completion={usage.get('completion_tokens')}  total={usage.get('total_tokens')}"
+        )
 
 
 if __name__ == "__main__":

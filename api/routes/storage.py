@@ -1,4 +1,5 @@
 """API routes for model cache management."""
+
 from __future__ import annotations
 
 import logging
