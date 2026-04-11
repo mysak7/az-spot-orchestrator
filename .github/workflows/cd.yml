@@ -86,7 +86,6 @@ jobs:
             --scripts "
               set -e
               cd /home/azureuser/az-spot-orchestrator
-              git pull origin master
               echo '${{ secrets.GITHUB_TOKEN }}' \
                 | docker login ghcr.io -u ${{ github.actor }} --password-stdin
               docker compose pull api worker
