@@ -75,10 +75,16 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Sync docker-compose.yml to VM
+        # Push the current docker-compose.yml to the server so volume mounts
+        # and other config changes are always in sync with the repo.
+        uses: actions/checkout@v4
+
       - name: Deploy via VM run-command
         # Runs on the control-plane VM as root — pulls the new image and
         # restarts the docker compose stack without an SSH key in GitHub.
         run: |
+          COMPOSE_CONTENT=$(base64 -w0 docker-compose.yml)
           az vm run-command invoke \
             --resource-group az-spot-orchestrator-rg \
             --name       az-spot-orchestrator-vm \
@@ -86,6 +92,7 @@ jobs:
             --scripts "
               set -e
               cd /home/azureuser/az-spot-orchestrator
+              echo '${COMPOSE_CONTENT}' | base64 -d > docker-compose.yml
               echo '${{ secrets.GITHUB_TOKEN }}' \
                 | docker login ghcr.io -u ${{ github.actor }} --password-stdin
               docker compose pull api worker
