@@ -43,11 +43,8 @@ jobs:
       - name: Install dependencies + mypy
         run: |
           pip install --no-cache-dir -r requirements.txt
-          pip install mypy \
-            types-requests \
-            azure-cosmos-stubs \
-            azure-storage-blob-stubs \
-            || true  # stubs are best-effort
+          pip install mypy types-requests
+          pip install azure-cosmos-stubs azure-storage-blob-stubs || true  # stubs are best-effort
 
       - name: Run mypy
         run: |
@@ -63,6 +60,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Build image
         uses: docker/build-push-action@v5
