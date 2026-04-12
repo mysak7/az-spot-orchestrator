@@ -155,9 +155,16 @@ def generate_cloud_init(
                   curl -sf -X POST "{control_plane_url}/api/storage/cache/download-log" \
                     -H "Content-Type: application/json" \
                     -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"source_region\\":\\"$SOURCE_REGION\\",\\"duration_seconds\\":$DURATION}}" 2>/dev/null || true
-                  # Mark done so the Ollama fallback block is skipped
                   SOURCE="blob_done"
+                else
+                  # Blob download failed (expired SAS, missing blob, network error).
+                  # Fall through to Ollama so the VM still becomes usable.
+                  echo "WARNING: Blob download failed — falling back to Ollama pull"
+                  SOURCE="ollama"
                 fi
+              else
+                echo "WARNING: No download URL in cache response — falling back to Ollama pull"
+                SOURCE="ollama"
               fi
             fi
 
@@ -182,16 +189,23 @@ def generate_cloud_init(
                   -H "Content-Type: application/json" \
                   -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"phase\\":\\"archiving\\"}}" 2>/dev/null || true
 
-                (
-                  curl -sL "https://aka.ms/downloadazcopy-v10-linux" -o /tmp/azcopy.tgz 2>/dev/null && \
-                  tar -xzf /tmp/azcopy.tgz --strip-components=1 -C /usr/local/bin/ --wildcards '*/azcopy' 2>/dev/null && \
-                  chmod +x /usr/local/bin/azcopy
-                ) || true
+                # Install azcopy — needed for blobs > 250 MB (most real models).
+                # Extract the binary by name to avoid --wildcards portability issues.
+                mkdir -p /tmp/azcopy_dl
+                if curl -sL "https://aka.ms/downloadazcopy-v10-linux" -o /tmp/azcopy_dl/azcopy.tgz 2>/dev/null; then
+                  tar -xzf /tmp/azcopy_dl/azcopy.tgz -C /tmp/azcopy_dl/ 2>/dev/null || true
+                  AZCOPY_BIN=$(find /tmp/azcopy_dl -name 'azcopy' -type f 2>/dev/null | head -1)
+                  if [ -n "$AZCOPY_BIN" ]; then
+                    mv "$AZCOPY_BIN" /usr/local/bin/azcopy && chmod +x /usr/local/bin/azcopy
+                  fi
+                fi
+                rm -rf /tmp/azcopy_dl
 
                 START=$(date +%s)
                 echo "Creating model archive..."
                 tar -czf /tmp/model.tar.gz -C /mnt/resource models/ 2>/dev/null || true
 
+                UPLOAD_SUCCESS=0
                 if [ -f /tmp/model.tar.gz ]; then
                   SIZE=$(stat -c%s /tmp/model.tar.gz 2>/dev/null || echo 0)
                   echo "=== Uploading $SIZE bytes to blob (phase: uploading) ==="
@@ -200,20 +214,29 @@ def generate_cloud_init(
                     -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"phase\\":\\"uploading\\"}}" 2>/dev/null || true
 
                   if command -v azcopy &> /dev/null; then
-                    azcopy copy /tmp/model.tar.gz "$UPLOAD_URL" --overwrite=false 2>/dev/null || true
+                    azcopy copy /tmp/model.tar.gz "$UPLOAD_URL" --overwrite=false 2>/dev/null && UPLOAD_SUCCESS=1 || true
+                  elif [ "$SIZE" -lt 262144000 ]; then
+                    curl -sf -X PUT -H "x-ms-blob-type: BlockBlob" \
+                      --data-binary @/tmp/model.tar.gz "$UPLOAD_URL" 2>/dev/null && UPLOAD_SUCCESS=1 || true
                   else
-                    if [ "$SIZE" -lt 262144000 ]; then
-                      curl -sf -X PUT -H "x-ms-blob-type: BlockBlob" --data-binary @/tmp/model.tar.gz "$UPLOAD_URL" 2>/dev/null || true
-                    fi
+                    echo "WARNING: azcopy unavailable and model too large for single PUT ($SIZE bytes) — upload skipped"
                   fi
                   rm -f /tmp/model.tar.gz
                 fi
+
                 END=$(date +%s)
                 DURATION=$((END - START))
 
-                curl -sf -X POST "{control_plane_url}/api/storage/cache/complete" \
-                  -H "Content-Type: application/json" \
-                  -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"size_bytes\\":${{SIZE:-0}},\\"duration_seconds\\":$DURATION}}" 2>/dev/null || true
+                if [ "$UPLOAD_SUCCESS" -eq 1 ]; then
+                  curl -sf -X POST "{control_plane_url}/api/storage/cache/complete" \
+                    -H "Content-Type: application/json" \
+                    -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"size_bytes\\":${{SIZE:-0}},\\"duration_seconds\\":$DURATION}}" 2>/dev/null || true
+                else
+                  echo "WARNING: Blob upload failed — marking cache entry as failed"
+                  curl -sf -X POST "{control_plane_url}/api/storage/cache/failed" \
+                    -H "Content-Type: application/json" \
+                    -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\"}}" 2>/dev/null || true
+                fi
               fi
             fi
 

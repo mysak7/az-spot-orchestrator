@@ -129,19 +129,22 @@ async def get_best_source(
         None,
     )
     if same_region_entry:
-        download_url = _generate_sas_url(same_region_entry.blob_name, "read")
-        upload_url = _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
-        logger.info(
-            "Model %s found in same region %s",
-            model_identifier,
-            vm_region,
-        )
-        return {
-            "source": "blob_same_region",
-            "download_url": download_url,
-            "upload_url": upload_url,
-            "source_region": vm_region,
-        }
+        try:
+            download_url = _generate_sas_url(same_region_entry.blob_name, "read")
+            upload_url = _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
+            logger.info("Model %s found in same region %s", model_identifier, vm_region)
+            return {
+                "source": "blob_same_region",
+                "download_url": download_url,
+                "upload_url": upload_url,
+                "source_region": vm_region,
+            }
+        except Exception as e:
+            logger.warning(
+                "Same-region blob found for %s but SAS generation failed — falling back: %s",
+                model_identifier,
+                e,
+            )
 
     # Find nearest region with the model
     if items:
@@ -149,27 +152,49 @@ async def get_best_source(
         nearest = _nearest_region(vm_region, available_regions)
         if nearest:
             nearest_entry = next(e for e in items if e.region == nearest)
-            download_url = _generate_sas_url(nearest_entry.blob_name, "read")
-            upload_url = _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
-            logger.info(
-                "Model %s not in %s, found in nearest region %s (distance=%.1f)",
-                model_identifier,
-                vm_region,
-                nearest,
-                _euclidean_distance(vm_region, nearest),
-            )
-            return {
-                "source": "blob_cross_region",
-                "download_url": download_url,
-                "upload_url": upload_url,
-                "source_region": nearest,
-            }
+            try:
+                download_url = _generate_sas_url(nearest_entry.blob_name, "read")
+                upload_url = _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
+                logger.info(
+                    "Model %s not in %s, found in nearest region %s (distance=%.1f)",
+                    model_identifier,
+                    vm_region,
+                    nearest,
+                    _euclidean_distance(vm_region, nearest),
+                )
+                return {
+                    "source": "blob_cross_region",
+                    "download_url": download_url,
+                    "upload_url": upload_url,
+                    "source_region": nearest,
+                }
+            except Exception as e:
+                logger.warning(
+                    "Cross-region blob found for %s in %s but SAS generation failed — falling back: %s",
+                    model_identifier,
+                    nearest,
+                    e,
+                )
 
-    # No cached model; return Ollama fallback with upload URL for after pull.
-    # Create an "uploading" entry immediately so the control plane can see progress.
-    upload_url = _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
+    # No cached model — fall back to Ollama pull.
+    # Mark upload started *before* generating the SAS URL so that the
+    # dashboard shows the "uploading" entry even if SAS generation fails.
     logger.info("No cached blob for model %s; falling back to Ollama pull", model_identifier)
     await mark_upload_started(model_identifier, vm_region)
+
+    try:
+        upload_url = _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
+    except Exception as e:
+        # Storage account not configured or credentials invalid.  The VM will
+        # still pull from Ollama; it just won't be able to cache the result.
+        logger.warning(
+            "Cannot generate upload SAS URL for %s in %s — storage not configured? (%s)",
+            model_identifier,
+            vm_region,
+            e,
+        )
+        upload_url = ""
+
     return {
         "source": "ollama",
         "upload_url": upload_url,
