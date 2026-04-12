@@ -86,3 +86,15 @@ resource "github_actions_variable" "azure_subscription_id" {
   variable_name = "AZURE_SUBSCRIPTION_ID"
   value         = data.azurerm_subscription.current.subscription_id
 }
+
+resource "github_actions_variable" "azure_storage_account_name" {
+  repository    = "az-spot-orchestrator"
+  variable_name = "AZURE_STORAGE_ACCOUNT_NAME"
+  value         = azurerm_storage_account.model_cache.name
+}
+
+resource "github_actions_variable" "control_plane_url" {
+  repository    = "az-spot-orchestrator"
+  variable_name = "CONTROL_PLANE_URL"
+  value         = "http://${azurerm_public_ip.main.ip_address}"
+}

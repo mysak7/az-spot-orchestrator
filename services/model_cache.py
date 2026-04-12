@@ -12,13 +12,19 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
+from azure.identity.aio import ClientSecretCredential
 from azure.storage.blob import BlobSasPermissions, generate_blob_sas
+from azure.storage.blob.aio import BlobServiceClient
 
 from config import get_settings
 from db.cosmos import get_cache_container
 from db.models import ModelCacheEntry
 
 logger = logging.getLogger(__name__)
+
+# User-delegation key cache — refreshed hourly (keys are valid up to 7 days).
+_delegation_key: object | None = None
+_delegation_key_expiry: datetime | None = None
 
 
 # Geographic coordinates (lat, lon) for Azure regions to determine proximity
@@ -45,25 +51,57 @@ def _blob_name(model_identifier: str, region: str) -> str:
     return f"{region}/{sanitized}.tar.gz"
 
 
-def _generate_sas_url(
+async def _get_delegation_key() -> object:
+    """Return a cached user-delegation key, refreshing when near expiry.
+
+    Uses the service principal already configured for Azure VM operations —
+    no storage account key needed anywhere.
+    """
+    global _delegation_key, _delegation_key_expiry
+    now = datetime.now(UTC)
+    if _delegation_key_expiry is not None and _delegation_key_expiry > now + timedelta(minutes=10):
+        return _delegation_key  # type: ignore[return-value]
+
+    s = get_settings()
+    expiry = now + timedelta(hours=1)
+    account_url = f"https://{s.azure_storage_account_name}.blob.core.windows.net"
+    async with ClientSecretCredential(
+        tenant_id=s.azure_tenant_id,
+        client_id=s.azure_client_id,
+        client_secret=s.azure_client_secret,
+    ) as credential:
+        async with BlobServiceClient(account_url=account_url, credential=credential) as client:
+            key = await client.get_user_delegation_key(
+                key_start_time=now - timedelta(minutes=5),  # small buffer for clock skew
+                key_expiry_time=expiry,
+            )
+
+    _delegation_key = key
+    _delegation_key_expiry = expiry
+    return key
+
+
+async def _generate_sas_url(
     blob_name: str,
     permission: Literal["read", "write"],
     expiry_hours: int = 2,
 ) -> str:
-    """Generate a SAS URL for accessing a blob in the cache container."""
+    """Generate a user-delegation SAS URL — no storage account key required."""
     s = get_settings()
     perms = BlobSasPermissions(
         read=(permission == "read"),
         write=(permission == "write"),
         create=(permission == "write"),
     )
+    expiry = datetime.now(UTC) + timedelta(hours=expiry_hours)
+    delegation_key = await _get_delegation_key()
     sas = generate_blob_sas(
         account_name=s.azure_storage_account_name,
         container_name=s.azure_storage_container_name,
         blob_name=blob_name,
-        account_key=s.azure_storage_account_key,
+        user_delegation_key=delegation_key,
         permission=perms,
-        expiry=datetime.now(UTC) + timedelta(hours=expiry_hours),
+        expiry=expiry,
     )
     account_url = f"https://{s.azure_storage_account_name}.blob.core.windows.net"
     return f"{account_url}/{s.azure_storage_container_name}/{blob_name}?{sas}"
@@ -130,8 +168,8 @@ async def get_best_source(
     )
     if same_region_entry:
         try:
-            download_url = _generate_sas_url(same_region_entry.blob_name, "read")
-            upload_url = _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
+            download_url = await _generate_sas_url(same_region_entry.blob_name, "read")
+            upload_url = await _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
             logger.info("Model %s found in same region %s", model_identifier, vm_region)
             return {
                 "source": "blob_same_region",
@@ -153,8 +191,8 @@ async def get_best_source(
         if nearest:
             nearest_entry = next(e for e in items if e.region == nearest)
             try:
-                download_url = _generate_sas_url(nearest_entry.blob_name, "read")
-                upload_url = _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
+                download_url = await _generate_sas_url(nearest_entry.blob_name, "read")
+                upload_url = await _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
                 logger.info(
                     "Model %s not in %s, found in nearest region %s (distance=%.1f)",
                     model_identifier,
@@ -183,7 +221,7 @@ async def get_best_source(
     await mark_upload_started(model_identifier, vm_region)
 
     try:
-        upload_url = _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
+        upload_url = await _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
     except Exception as e:
         # Storage account not configured or credentials invalid.  The VM will
         # still pull from Ollama; it just won't be able to cache the result.

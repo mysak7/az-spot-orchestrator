@@ -81,18 +81,39 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Deploy via VM run-command
-        # Runs on the control-plane VM as root — pulls the new image and
-        # restarts the docker compose stack without an SSH key in GitHub.
+        # Runs on the control-plane VM as root — writes .env from secrets,
+        # pulls the new image, and restarts the docker compose stack.
+        # No SSH key is stored in GitHub; az vm run-command uses OIDC auth.
+        env:
+          APP_ENV: |
+            COSMOS_ENDPOINT=${{ secrets.COSMOS_ENDPOINT }}
+            COSMOS_KEY=${{ secrets.COSMOS_KEY }}
+            AZURE_SUBSCRIPTION_ID=${{ vars.AZURE_SUBSCRIPTION_ID }}
+            AZURE_TENANT_ID=${{ vars.AZURE_TENANT_ID }}
+            AZURE_CLIENT_ID=${{ vars.AZURE_CLIENT_ID }}
+            AZURE_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET }}
+            AZURE_RESOURCE_GROUP=az-spot-orchestrator-rg
+            AZURE_SSH_PUBLIC_KEY=${{ secrets.AZURE_SSH_PUBLIC_KEY }}
+            AZURE_STORAGE_ACCOUNT_NAME=${{ vars.AZURE_STORAGE_ACCOUNT_NAME }}
+            AZURE_STORAGE_CONTAINER_NAME=model-cache
+            CONTROL_PLANE_URL=${{ vars.CONTROL_PLANE_URL }}
+            TEMPORAL_HOST=temporal:7233
+            TEMPORAL_NAMESPACE=default
+            TEMPORAL_TASK_QUEUE=vm-provisioning
         run: |
           COMPOSE_CONTENT=$(base64 -w0 docker-compose.yml)
+          ENV_CONTENT=$(echo "$APP_ENV" | base64 -w0)
           az vm run-command invoke \
             --resource-group az-spot-orchestrator-rg \
             --name       az-spot-orchestrator-vm \
             --command-id RunShellScript \
             --scripts "
               set -e
+              mkdir -p /home/azureuser/az-spot-orchestrator
               cd /home/azureuser/az-spot-orchestrator
               echo '${COMPOSE_CONTENT}' | base64 -d > docker-compose.yml
+              echo '${ENV_CONTENT}' | base64 -d > .env
+              chmod 600 .env
               echo '${{ secrets.GITHUB_TOKEN }}' \
                 | docker login ghcr.io -u ${{ github.actor }} --password-stdin
               docker compose pull api worker

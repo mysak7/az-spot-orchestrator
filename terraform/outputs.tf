@@ -24,12 +24,6 @@ output "storage_account_name" {
   value       = azurerm_storage_account.model_cache.name
 }
 
-output "storage_account_key" {
-  description = "Storage account key for model cache — set as AZURE_STORAGE_ACCOUNT_KEY in .env"
-  value       = azurerm_storage_account.model_cache.primary_access_key
-  sensitive   = true
-}
-
 output "github_actions_client_id" {
   description = "AZURE_CLIENT_ID — set automatically in GitHub Actions variables by make oidc-setup"
   value       = azuread_application.github_actions.client_id
