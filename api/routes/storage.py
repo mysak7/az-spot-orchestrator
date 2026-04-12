@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException
 
 from schemas.api import (
     CacheCompleteRequest,
+    CacheFailedRequest,
+    CacheProgressRequest,
     CacheSourceResponse,
     DownloadLogRequest,
     ModelCacheEntryResponse,
@@ -15,8 +17,10 @@ from schemas.api import (
 from services.model_cache import (
     get_best_source,
     list_cache_entries,
+    mark_upload_failed,
     register_upload_complete,
     update_download_stats,
+    update_upload_phase,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,6 +70,34 @@ async def register_cache_upload(req: CacheCompleteRequest) -> dict:
         }
     except Exception as e:
         logger.error("Failed to register cache upload: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/storage/cache/progress")
+async def report_cache_progress(req: CacheProgressRequest) -> dict:
+    """Update the current phase of an in-progress model upload.
+
+    Called by the Spot VM at each milestone:
+    - phase='pulling'   — ollama pull started
+    - phase='archiving' — tar compression started
+    - phase='uploading' — blob upload started
+    """
+    try:
+        await update_upload_phase(req.model_identifier, req.region, req.phase)
+        return {"status": "updated", "phase": req.phase}
+    except Exception as e:
+        logger.error("Failed to update cache progress: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/storage/cache/failed")
+async def report_cache_failed(req: CacheFailedRequest) -> dict:
+    """Mark a cache entry as failed when the VM encounters an error."""
+    try:
+        await mark_upload_failed(req.model_identifier, req.region)
+        return {"status": "marked_failed"}
+    except Exception as e:
+        logger.error("Failed to mark cache as failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 

@@ -112,8 +112,26 @@ class ModelCacheEntryResponse(BaseModel):
     blob_name: str
     size_bytes: int
     status: str
+    current_phase: str | None  # "pulling" | "archiving" | "uploading" | None (when done/failed)
+    upload_started_at: str
+    upload_completed_at: str | None
     upload_duration_seconds: float | None
     last_download_duration_seconds: float | None
     download_count: int
     created_at: str
     updated_at: str
+
+
+class CacheProgressRequest(BaseModel):
+    """Request body for POST /api/storage/cache/progress — VM reports current phase."""
+
+    model_identifier: str
+    region: str
+    phase: str  # "pulling" | "archiving" | "uploading"
+
+
+class CacheFailedRequest(BaseModel):
+    """Request body for POST /api/storage/cache/failed — VM reports upload failure."""
+
+    model_identifier: str
+    region: str

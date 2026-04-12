@@ -163,14 +163,25 @@ def generate_cloud_init(
 
             # --- Ollama fallback: pull then upload to blob ---
             if [ "$SOURCE" = "ollama" ]; then
-              echo "=== Pulling model from Ollama ==="
+              echo "=== Pulling model from Ollama (phase: pulling) ==="
+              curl -sf -X POST "{control_plane_url}/api/storage/cache/progress" \
+                -H "Content-Type: application/json" \
+                -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"phase\\":\\"pulling\\"}}" 2>/dev/null || true
+
               if ! ollama pull {model_identifier}; then
                 echo "ERROR: Model pull failed"
+                curl -sf -X POST "{control_plane_url}/api/storage/cache/failed" \
+                  -H "Content-Type: application/json" \
+                  -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\"}}" 2>/dev/null || true
                 exit 1
               fi
 
               if [ -n "$UPLOAD_URL" ]; then
-                echo "Uploading model to blob storage..."
+                echo "=== Archiving model (phase: archiving) ==="
+                curl -sf -X POST "{control_plane_url}/api/storage/cache/progress" \
+                  -H "Content-Type: application/json" \
+                  -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"phase\\":\\"archiving\\"}}" 2>/dev/null || true
+
                 (
                   curl -sL "https://aka.ms/downloadazcopy-v10-linux" -o /tmp/azcopy.tgz 2>/dev/null && \
                   tar -xzf /tmp/azcopy.tgz --strip-components=1 -C /usr/local/bin/ --wildcards '*/azcopy' 2>/dev/null && \
@@ -183,7 +194,11 @@ def generate_cloud_init(
 
                 if [ -f /tmp/model.tar.gz ]; then
                   SIZE=$(stat -c%s /tmp/model.tar.gz 2>/dev/null || echo 0)
-                  echo "Uploading $SIZE bytes to blob storage..."
+                  echo "=== Uploading $SIZE bytes to blob (phase: uploading) ==="
+                  curl -sf -X POST "{control_plane_url}/api/storage/cache/progress" \
+                    -H "Content-Type: application/json" \
+                    -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"phase\\":\\"uploading\\"}}" 2>/dev/null || true
+
                   if command -v azcopy &> /dev/null; then
                     azcopy copy /tmp/model.tar.gz "$UPLOAD_URL" --overwrite=false 2>/dev/null || true
                   else

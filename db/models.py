@@ -62,6 +62,7 @@ class ModelCacheEntry(BaseModel):
     blob_name: str  # e.g. "eastus/qwen2.5-1.5b.tar.gz"
     size_bytes: int = 0
     status: Literal["uploading", "available", "failed"] = "uploading"
+    current_phase: str | None = None  # "pulling" | "archiving" | "uploading" | None
     upload_started_at: str
     upload_completed_at: str | None = None
     upload_duration_seconds: float | None = None

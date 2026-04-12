@@ -165,9 +165,11 @@ async def get_best_source(
                 "source_region": nearest,
             }
 
-    # No cached model; return Ollama fallback with upload URL for after pull
+    # No cached model; return Ollama fallback with upload URL for after pull.
+    # Create an "uploading" entry immediately so the control plane can see progress.
     upload_url = _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
     logger.info("No cached blob for model %s; falling back to Ollama pull", model_identifier)
+    await mark_upload_started(model_identifier, vm_region)
     return {
         "source": "ollama",
         "upload_url": upload_url,
@@ -190,7 +192,8 @@ async def register_upload_complete(
         blob_name=_blob_name(model_identifier, region),
         size_bytes=size_bytes,
         status="available",
-        upload_started_at=now,  # Simplified; ideally track this in VM
+        current_phase=None,
+        upload_started_at=now,
         upload_completed_at=now,
         upload_duration_seconds=duration_seconds,
         created_at=now,
@@ -236,6 +239,54 @@ async def update_download_stats(
             source_region,
             e,
         )
+
+
+async def mark_upload_started(model_identifier: str, region: str) -> None:
+    """Create a placeholder cache entry with status='uploading' and phase='pulling'."""
+    container = get_cache_container()
+    now = datetime.now(UTC).isoformat()
+    entry = ModelCacheEntry(
+        id=f"{_sanitize_identifier(model_identifier)}-{region}",
+        model_identifier=model_identifier,
+        region=region,
+        blob_name=_blob_name(model_identifier, region),
+        status="uploading",
+        current_phase="pulling",
+        upload_started_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    await container.upsert_item(entry.model_dump())
+    logger.info("Marked upload started for %s in %s (phase=pulling)", model_identifier, region)
+
+
+async def update_upload_phase(model_identifier: str, region: str, phase: str) -> None:
+    """Update the current phase of an in-progress upload (pulling/archiving/uploading)."""
+    container = get_cache_container()
+    entry_id = f"{_sanitize_identifier(model_identifier)}-{region}"
+    try:
+        item = await container.read_item(entry_id, partition_key=entry_id)
+        item["current_phase"] = phase
+        item["updated_at"] = datetime.now(UTC).isoformat()
+        await container.upsert_item(item)
+        logger.info("Phase update for %s in %s: %s", model_identifier, region, phase)
+    except Exception as e:
+        logger.warning("Failed to update phase for %s in %s: %s", model_identifier, region, e)
+
+
+async def mark_upload_failed(model_identifier: str, region: str) -> None:
+    """Mark a cache entry as failed."""
+    container = get_cache_container()
+    entry_id = f"{_sanitize_identifier(model_identifier)}-{region}"
+    try:
+        item = await container.read_item(entry_id, partition_key=entry_id)
+        item["status"] = "failed"
+        item["current_phase"] = None
+        item["updated_at"] = datetime.now(UTC).isoformat()
+        await container.upsert_item(item)
+        logger.warning("Marked upload failed for %s in %s", model_identifier, region)
+    except Exception as e:
+        logger.warning("Failed to mark upload failed for %s in %s: %s", model_identifier, region, e)
 
 
 async def list_cache_entries() -> list[ModelCacheEntry]:
