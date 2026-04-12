@@ -211,7 +211,7 @@ resource "azurerm_linux_virtual_machine" "main" {
   name                = "${local.project}-vm"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
-  size                = "Standard_D2s_v3"
+  size                = "Standard_B2s"
   admin_username      = "azureuser"
 
   network_interface_ids = [azurerm_network_interface.main.id]
@@ -229,7 +229,7 @@ resource "azurerm_linux_virtual_machine" "main" {
 
   os_disk {
     caching              = "ReadWrite"
-    storage_account_type = "Premium_LRS"
+    storage_account_type = "Standard_LRS"
   }
 
   source_image_reference {
