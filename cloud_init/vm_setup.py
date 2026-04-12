@@ -8,6 +8,7 @@ The cloud-init script:
   3. Pulls the requested model via a one-shot systemd service.
   4. Notifies the control plane when the model is ready.
 """
+
 from __future__ import annotations
 
 import base64
@@ -154,7 +155,7 @@ def generate_cloud_init(
                   curl -sf -X POST "{control_plane_url}/api/storage/cache/download-log" \
                     -H "Content-Type: application/json" \
                     -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"source_region\\":\\"$SOURCE_REGION\\",\\"duration_seconds\\":$DURATION}}" 2>/dev/null || true
-                  # Skip Ollama pull; fall through to ready notification
+                  # Mark done so the Ollama fallback block is skipped
                   SOURCE="blob_done"
                 fi
               fi

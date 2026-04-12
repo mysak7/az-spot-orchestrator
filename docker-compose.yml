@@ -36,7 +36,8 @@ services:
   # ── Control Plane API ────────────────────────────────────────────────────────
   api:
     build: .
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    image: ghcr.io/mysak7/az-spot-orchestrator:latest
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
     depends_on:
       temporal:
         condition: service_healthy
@@ -45,12 +46,11 @@ services:
       TEMPORAL_HOST: temporal:7233
     ports:
       - "80:8000"
-    volumes:
-      - .:/app
 
   # ── Temporal Worker ──────────────────────────────────────────────────────────
   worker:
     build: .
+    image: ghcr.io/mysak7/az-spot-orchestrator:latest
     command: python worker.py
     depends_on:
       temporal:
@@ -58,8 +58,6 @@ services:
     env_file: .env
     environment:
       TEMPORAL_HOST: temporal:7233
-    volumes:
-      - .:/app
 
 volumes:
   temporal_data:

@@ -2,6 +2,7 @@
 
 Workflow is deterministic: all side-effects (Azure API, DB) run in Activities.
 """
+
 from __future__ import annotations
 
 from datetime import timedelta
@@ -11,8 +12,8 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
-    from config import get_settings
     from cloud_init.vm_setup import generate_cloud_init
+    from config import get_settings
     from temporal.activities.azure import (
         delete_azure_vm,
         get_cheapest_region,
@@ -111,7 +112,10 @@ class ProvisionVMWorkflow:
                 region = candidate
                 break
             except ActivityError as exc:
-                if isinstance(exc.__cause__, ApplicationError) and exc.__cause__.type == "SkuNotAvailable":
+                if (
+                    isinstance(exc.__cause__, ApplicationError)
+                    and exc.__cause__.type == "SkuNotAvailable"
+                ):
                     workflow.logger.warning(
                         "No Spot capacity for %s in %s, trying next region",
                         input.vm_size,
@@ -153,8 +157,7 @@ class ProvisionVMWorkflow:
                 start_to_close_timeout=timedelta(minutes=2),
             )
             raise RuntimeError(
-                f"No region had Spot capacity for {input.vm_size}. "
-                f"Tried: {regions}"
+                f"No region had Spot capacity for {input.vm_size}. Tried: {regions}"
             ) from last_error
 
         # ── Step 3: mark provisioning ──────────────────────────────────────

@@ -18,6 +18,7 @@
     --red:       #f85149;
     --gray:      #484f58;
     --radius:    6px;
+    --nav-w:     200px;
     --font:      -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   }
 
@@ -29,18 +30,23 @@
     font-family: var(--font);
     font-size: 14px;
     line-height: 1.5;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
   }
 
-  /* ── Layout ── */
+  /* ── Header ── */
   header {
     border-bottom: 1px solid var(--border);
-    padding: 16px 32px;
+    padding: 12px 24px;
     display: flex;
     align-items: center;
     gap: 12px;
+    flex-shrink: 0;
+    z-index: 10;
   }
 
-  header h1 { font-size: 16px; font-weight: 600; }
+  header h1 { font-size: 15px; font-weight: 600; }
   header .subtitle { color: var(--muted); font-size: 12px; }
 
   .refresh-indicator {
@@ -64,27 +70,94 @@
     50% { opacity: 0.3; }
   }
 
-  main { padding: 32px; max-width: 1400px; margin: 0 auto; }
+  /* ── Body layout ── */
+  .layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
 
-  section { margin-bottom: 40px; }
+  /* ── Sidebar nav ── */
+  nav {
+    width: var(--nav-w);
+    border-right: 1px solid var(--border);
+    padding: 16px 8px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+  }
 
-  .section-header {
+  .nav-section-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 8px 8px 4px;
+    margin-top: 8px;
+  }
+
+  .nav-section-label:first-child { margin-top: 0; }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 500;
+    transition: background 0.1s, color 0.1s;
+    user-select: none;
+    border: none;
+    background: none;
+    width: 100%;
+    text-align: left;
+  }
+
+  .nav-item:hover { background: rgba(255,255,255,0.05); color: var(--text); }
+
+  .nav-item.active {
+    background: rgba(56,139,253,0.15);
+    color: var(--blue);
+  }
+
+  .nav-item svg { flex-shrink: 0; }
+
+  .nav-badge {
+    margin-left: auto;
+    background: var(--gray);
+    color: var(--text);
+    border-radius: 20px;
+    padding: 0 6px;
+    font-size: 11px;
+    font-weight: 600;
+    min-width: 20px;
+    text-align: center;
+  }
+
+  /* ── Main content ── */
+  main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 28px 32px;
+  }
+
+  .page { display: none; }
+  .page.active { display: block; }
+
+  .page-header {
     display: flex;
     align-items: center;
     gap: 12px;
-    margin-bottom: 16px;
+    margin-bottom: 20px;
   }
 
-  .section-header h2 { font-size: 16px; font-weight: 600; }
-
-  .count-badge {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 20px;
-    padding: 1px 8px;
-    font-size: 12px;
-    color: var(--muted);
-  }
+  .page-header h2 { font-size: 18px; font-weight: 600; }
 
   /* ── Buttons ── */
   .btn {
@@ -122,7 +195,7 @@
   th {
     text-align: left;
     padding: 10px 16px;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--muted);
     text-transform: uppercase;
@@ -138,7 +211,6 @@
   }
 
   tr:last-child td { border-bottom: none; }
-
   tr:hover td { background: rgba(255,255,255,0.02); }
 
   .empty-row td {
@@ -168,6 +240,8 @@
   .badge-running      { background: rgba(63,185,80,0.15);  color: #56d364; border: 1px solid #3fb950; }
   .badge-evicted      { background: rgba(248,81,73,0.15);  color: #ff7b72; border: 1px solid #f85149; }
   .badge-terminated   { background: rgba(72,79,88,0.15);   color: #6e7681; border: 1px solid #30363d; }
+  .badge-available    { background: rgba(63,185,80,0.15);  color: #56d364; border: 1px solid #3fb950; }
+  .badge-uploading    { background: rgba(210,153,34,0.15); color: #e3b341; border: 1px solid #d29922; }
 
   /* ── Modal / Form ── */
   .modal-backdrop {
@@ -248,8 +322,32 @@
   #toast.error { border-color: var(--red); color: var(--red); }
   #toast.success { border-color: var(--green); color: var(--green); }
 
-  /* ── Status dot in instances ── */
-  .ip-cell { font-family: "SF Mono", "Fira Code", monospace; font-size: 12px; }
+  /* ── Cache stats row ── */
+  .stats-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    flex: 1;
+  }
+
+  .stat-card .stat-value {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .stat-card .stat-label {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
 </style>
 </head>
 <body>
@@ -268,67 +366,160 @@
   </div>
 </header>
 
-<main>
+<div class="layout">
 
-  <!-- ── Models ─────────────────────────────────────────────────────────────── -->
-  <section>
-    <div class="section-header">
-      <h2>Registered Models</h2>
-      <span class="count-badge" id="models-count">–</span>
-      <button class="btn btn-primary" style="margin-left:auto" onclick="openRegisterModal()">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
-        Register Model
-      </button>
-    </div>
-    <div class="card">
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Description</th>
-            <th>Size</th>
-            <th>Ollama Tag</th>
-            <th>VM SKU</th>
-            <th>Registered</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="models-tbody">
-          <tr class="empty-row"><td colspan="7">Loading…</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
+  <!-- ── Sidebar ── -->
+  <nav>
+    <div class="nav-section-label">Compute</div>
 
-  <!-- ── VM Instances ───────────────────────────────────────────────────────── -->
-  <section>
-    <div class="section-header">
-      <h2>VM Instances</h2>
-      <span class="count-badge" id="instances-count">–</span>
-    </div>
-    <div class="card">
-      <table>
-        <thead>
-          <tr>
-            <th>VM Name</th>
-            <th>Model</th>
-            <th>Status</th>
-            <th>Region</th>
-            <th>IP Address</th>
-            <th>Workflow</th>
-            <th>Last Updated</th>
-          </tr>
-        </thead>
-        <tbody id="instances-tbody">
-          <tr class="empty-row"><td colspan="7">Loading…</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
+    <button class="nav-item active" data-page="vms" onclick="navigate('vms')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
+        <line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
+      </svg>
+      VM Instances
+      <span class="nav-badge" id="nav-vms-count">–</span>
+    </button>
 
-</main>
+    <div class="nav-section-label">Models</div>
 
-<!-- ── Register Model Modal ──────────────────────────────────────────────────── -->
+    <button class="nav-item" data-page="models" onclick="navigate('models')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+      </svg>
+      Registered
+      <span class="nav-badge" id="nav-models-count">–</span>
+    </button>
+
+    <button class="nav-item" data-page="cache" onclick="navigate('cache')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/>
+        <path d="M3 12a9 3 0 0 0 18 0"/>
+      </svg>
+      Blob Cache
+      <span class="nav-badge" id="nav-cache-count">–</span>
+    </button>
+  </nav>
+
+  <!-- ── Main content ── -->
+  <main>
+
+    <!-- ── VMs page ── -->
+    <div class="page active" id="page-vms">
+      <div class="page-header">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2">
+          <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
+          <line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
+        </svg>
+        <h2>VM Instances</h2>
+      </div>
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>VM Name</th>
+              <th>Model</th>
+              <th>Status</th>
+              <th>Region</th>
+              <th>IP Address</th>
+              <th>Workflow</th>
+              <th>Last Updated</th>
+            </tr>
+          </thead>
+          <tbody id="instances-tbody">
+            <tr class="empty-row"><td colspan="7">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Models page ── -->
+    <div class="page" id="page-models">
+      <div class="page-header">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+        </svg>
+        <h2>Registered Models</h2>
+        <button class="btn btn-primary" style="margin-left:auto" onclick="openRegisterModal()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+          Register Model
+        </button>
+      </div>
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Description</th>
+              <th>Size</th>
+              <th>Ollama Tag</th>
+              <th>VM SKU</th>
+              <th>Registered</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="models-tbody">
+            <tr class="empty-row"><td colspan="7">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Cache page ── -->
+    <div class="page" id="page-cache">
+      <div class="page-header">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2">
+          <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/>
+          <path d="M3 12a9 3 0 0 0 18 0"/>
+        </svg>
+        <h2>Blob Cache</h2>
+      </div>
+
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-value" id="cache-stat-count">–</div>
+          <div class="stat-label">Cached blobs</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="cache-stat-size">–</div>
+          <div class="stat-label">Total size</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="cache-stat-regions">–</div>
+          <div class="stat-label">Regions</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="cache-stat-downloads">–</div>
+          <div class="stat-label">Total downloads</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Region</th>
+              <th>Status</th>
+              <th>Size</th>
+              <th>Upload time</th>
+              <th>Downloads</th>
+              <th>Last dl time</th>
+              <th>Blob path</th>
+              <th>Cached</th>
+            </tr>
+          </thead>
+          <tbody id="cache-tbody">
+            <tr class="empty-row"><td colspan="9">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ── Register Model Modal ── -->
 <div class="modal-backdrop" id="register-modal" onclick="handleBackdropClick(event)">
   <div class="modal">
     <h3>Register New Model</h3>
@@ -367,12 +558,22 @@
   </div>
 </div>
 
-<!-- ── Toast ─────────────────────────────────────────────────────────────────── -->
+<!-- ── Toast ── -->
 <div id="toast"></div>
 
 <script>
-  const API = '';  // same origin
+  const API = '';
   let _models = [];
+  let _currentPage = 'vms';
+
+  // ── Navigation ─────────────────────────────────────────────────────────────
+  function navigate(page) {
+    document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
+    document.querySelector(`.nav-item[data-page="${page}"]`).classList.add('active');
+    document.getElementById(`page-${page}`).classList.add('active');
+    _currentPage = page;
+  }
 
   // ── Toast ──────────────────────────────────────────────────────────────────
   let toastTimer;
@@ -401,22 +602,35 @@
   // ── Utilities ──────────────────────────────────────────────────────────────
   function fmtDate(iso) {
     if (!iso) return '—';
-    const d = new Date(iso);
-    return d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+    return new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
   }
 
   function fmtSize(mb) {
-    return mb >= 1024 ? `${(mb/1024).toFixed(1)} GB` : `${mb} MB`;
+    return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
+  }
+
+  function fmtBytes(bytes) {
+    if (bytes == null || bytes === 0) return '—';
+    if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(1)} GB`;
+    if (bytes >= 1048576)    return `${(bytes / 1048576).toFixed(0)} MB`;
+    return `${(bytes / 1024).toFixed(0)} KB`;
+  }
+
+  function fmtDuration(sec) {
+    if (sec == null) return '—';
+    return sec >= 60 ? `${(sec / 60).toFixed(1)} min` : `${sec.toFixed(0)} s`;
   }
 
   function statusBadge(status) {
     const cls = {
-      pending: 'badge-pending',
+      pending:      'badge-pending',
       provisioning: 'badge-provisioning',
-      downloading: 'badge-downloading',
-      running: 'badge-running',
-      evicted: 'badge-evicted',
-      terminated: 'badge-terminated',
+      downloading:  'badge-downloading',
+      running:      'badge-running',
+      evicted:      'badge-evicted',
+      terminated:   'badge-terminated',
+      available:    'badge-available',
+      uploading:    'badge-uploading',
     }[status] || 'badge-pending';
     return `<span class="badge ${cls}">${status}</span>`;
   }
@@ -425,11 +639,40 @@
     return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
+  // ── Render VM Instances ────────────────────────────────────────────────────
+  function renderInstances(instances) {
+    const tbody = document.getElementById('instances-tbody');
+    document.getElementById('nav-vms-count').textContent = instances.length;
+
+    if (!instances.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">No VM instances yet — provision a model to get started</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = instances.map(i => `
+      <tr>
+        <td class="mono">${esc(i.vm_name)}</td>
+        <td><strong>${esc(i.model_name)}</strong></td>
+        <td>${statusBadge(i.status)}</td>
+        <td class="muted">${esc(i.region || '—')}</td>
+        <td class="mono" style="font-size:12px">${i.ip_address
+          ? `<a href="http://${esc(i.ip_address)}:11434" target="_blank" style="color:var(--blue);text-decoration:none">${esc(i.ip_address)}</a>`
+          : '<span class="muted">—</span>'
+        }</td>
+        <td class="mono muted" style="font-size:11px">${i.workflow_id
+          ? `<a href="http://localhost:8080/namespaces/default/workflows/${esc(i.workflow_id)}" target="_blank" style="color:var(--blue);text-decoration:none">${esc(i.workflow_id.slice(0, 28))}…</a>`
+          : '—'
+        }</td>
+        <td class="muted">${fmtDate(i.updated_at)}</td>
+      </tr>
+    `).join('');
+  }
+
   // ── Render Models ──────────────────────────────────────────────────────────
   function renderModels(models) {
     _models = models;
     const tbody = document.getElementById('models-tbody');
-    document.getElementById('models-count').textContent = models.length;
+    document.getElementById('nav-models-count').textContent = models.length;
 
     if (!models.length) {
       tbody.innerHTML = '<tr class="empty-row"><td colspan="7">No models registered yet</td></tr>';
@@ -460,31 +703,36 @@
     `).join('');
   }
 
-  // ── Render Instances ───────────────────────────────────────────────────────
-  function renderInstances(instances) {
-    const tbody = document.getElementById('instances-tbody');
-    document.getElementById('instances-count').textContent = instances.length;
+  // ── Render Cache ───────────────────────────────────────────────────────────
+  function renderCache(entries) {
+    const tbody = document.getElementById('cache-tbody');
+    document.getElementById('nav-cache-count').textContent = entries.length;
 
-    if (!instances.length) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">No VM instances yet — provision a model to get started</td></tr>';
+    // Stats
+    const totalBytes = entries.reduce((s, e) => s + (e.size_bytes || 0), 0);
+    const regions = new Set(entries.map(e => e.region)).size;
+    const totalDownloads = entries.reduce((s, e) => s + (e.download_count || 0), 0);
+    document.getElementById('cache-stat-count').textContent = entries.length;
+    document.getElementById('cache-stat-size').textContent = fmtBytes(totalBytes);
+    document.getElementById('cache-stat-regions').textContent = regions || '—';
+    document.getElementById('cache-stat-downloads').textContent = totalDownloads;
+
+    if (!entries.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="9">No cached blobs yet — provision a VM to trigger the first upload</td></tr>';
       return;
     }
 
-    tbody.innerHTML = instances.map(i => `
+    tbody.innerHTML = entries.map(e => `
       <tr>
-        <td class="mono">${esc(i.vm_name)}</td>
-        <td><strong>${esc(i.model_name)}</strong></td>
-        <td>${statusBadge(i.status)}</td>
-        <td class="muted">${esc(i.region || '—')}</td>
-        <td class="ip-cell">${i.ip_address
-          ? `<a href="http://${esc(i.ip_address)}:11434" target="_blank" style="color:var(--blue);text-decoration:none">${esc(i.ip_address)}</a>`
-          : '<span class="muted">—</span>'
-        }</td>
-        <td class="mono muted" style="font-size:11px">${i.workflow_id
-          ? `<a href="http://localhost:8080/namespaces/default/workflows/${esc(i.workflow_id)}" target="_blank" style="color:var(--blue);text-decoration:none">${esc(i.workflow_id.slice(0,28))}…</a>`
-          : '—'
-        }</td>
-        <td class="muted">${fmtDate(i.updated_at)}</td>
+        <td class="mono"><strong>${esc(e.model_identifier)}</strong></td>
+        <td class="mono muted">${esc(e.region)}</td>
+        <td>${statusBadge(e.status)}</td>
+        <td class="mono">${fmtBytes(e.size_bytes)}</td>
+        <td class="muted">${fmtDuration(e.upload_duration_seconds)}</td>
+        <td class="mono" style="text-align:center">${e.download_count ?? 0}</td>
+        <td class="muted">${fmtDuration(e.last_download_duration_seconds)}</td>
+        <td class="mono muted" style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.blob_name)}">${esc(e.blob_name)}</td>
+        <td class="muted">${fmtDate(e.created_at)}</td>
       </tr>
     `).join('');
   }
@@ -492,12 +740,14 @@
   // ── Data loading ───────────────────────────────────────────────────────────
   async function refresh() {
     try {
-      const [models, instances] = await Promise.all([
+      const [models, instances, cache] = await Promise.all([
         apiFetch('/api/models'),
         apiFetch('/api/instances'),
+        apiFetch('/api/storage/cache'),
       ]);
       renderModels(models);
       renderInstances(instances);
+      renderCache(cache);
       document.getElementById('refresh-label').textContent =
         'Updated ' + new Date().toLocaleTimeString();
     } catch (err) {
@@ -511,6 +761,7 @@
     try {
       const res = await apiFetch(`/api/models/${id}/provision`, { method: 'POST', body: '{}' });
       toast(`Provisioning started: ${res.vm_name}`, 'success');
+      navigate('vms');
       refresh();
     } catch (err) {
       toast(`Provision failed: ${err.message}`, 'error');

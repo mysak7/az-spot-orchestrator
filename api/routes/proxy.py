@@ -1,4 +1,5 @@
 """Reverse-proxy — forwards LLM requests to the active Spot VM."""
+
 from __future__ import annotations
 
 import logging

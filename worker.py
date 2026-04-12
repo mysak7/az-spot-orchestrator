@@ -1,4 +1,5 @@
 """Temporal worker — registers all workflows and activities, then runs indefinitely."""
+
 from __future__ import annotations
 
 import asyncio
@@ -26,9 +27,7 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     settings = get_settings()
-    client = await Client.connect(
-        settings.temporal_host, namespace=settings.temporal_namespace
-    )
+    client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
 
     worker = Worker(
         client,

@@ -4,6 +4,14 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 3.0"
     }
+    azuread = {
+      source  = "hashicorp/azuread"
+      version = "~> 2.0"
+    }
+    github = {
+      source  = "integrations/github"
+      version = "~> 6.0"
+    }
   }
   required_version = ">= 1.3.0"
 
@@ -111,7 +119,7 @@ resource "azurerm_storage_account" "model_cache" {
 
 resource "azurerm_storage_container" "model_cache" {
   name                  = "model-cache"
-  storage_account_id    = azurerm_storage_account.model_cache.id
+  storage_account_name  = azurerm_storage_account.model_cache.name
   container_access_type = "private"
 }
 

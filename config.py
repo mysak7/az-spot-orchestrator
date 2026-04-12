@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 @dataclass
 class DefaultModel:
     """A model that should be seeded into the registry on startup if absent."""
+
     name: str
     model_identifier: str
     size_mb: int

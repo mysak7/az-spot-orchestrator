@@ -2,6 +2,7 @@
 
 Using stdlib dataclasses (not Pydantic) for Temporal serialisation compatibility.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -11,7 +12,7 @@ from dataclasses import dataclass, field
 class ProvisionVMInput:
     model_id: str
     model_name: str
-    model_identifier: str   # e.g. "llama3:8b"
+    model_identifier: str  # e.g. "llama3:8b"
     vm_size: str
     vm_name: str
     resource_group: str
@@ -37,7 +38,7 @@ class ProvisionAzureVMInput:
     region: str
     vm_size: str
     model_identifier: str
-    cloud_init_b64: str     # base64-encoded cloud-config YAML
+    cloud_init_b64: str  # base64-encoded cloud-config YAML
 
 
 @dataclass

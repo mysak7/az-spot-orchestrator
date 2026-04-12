@@ -1,8 +1,9 @@
 """Model registration, instance management, and VM lifecycle notification routes."""
+
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from azure.core.exceptions import ResourceNotFoundError
 from fastapi import APIRouter, HTTPException, status
@@ -26,6 +27,7 @@ router = APIRouter()
 
 
 # ── Model registration ─────────────────────────────────────────────────────────
+
 
 @router.post("/models", response_model=LLMModelResponse, status_code=status.HTTP_201_CREATED)
 async def create_model(payload: LLMModelCreate) -> LLMModelResponse:
@@ -79,6 +81,7 @@ async def delete_model(model_id: str) -> None:
 
 
 # ── VM provisioning ────────────────────────────────────────────────────────────
+
 
 @router.post(
     "/models/{model_id}/provision",
@@ -151,6 +154,7 @@ async def list_instances(model_id: str) -> list[VMInstanceResponse]:
 
 # ── All instances (dashboard) ─────────────────────────────────────────────────
 
+
 @router.get("/instances", response_model=list[VMInstanceResponse])
 async def list_all_instances() -> list[VMInstanceResponse]:
     """Return every VM instance across all models, newest first."""
@@ -166,6 +170,7 @@ async def list_all_instances() -> list[VMInstanceResponse]:
 
 # ── VM lifecycle notifications ────────────────────────────────────────────────
 
+
 @router.post("/vms/{vm_name}/ready", status_code=status.HTTP_200_OK)
 async def notify_vm_ready(vm_name: str) -> dict:
     """Cloud-init calls this after the model finishes downloading."""
@@ -176,7 +181,7 @@ async def notify_vm_ready(vm_name: str) -> dict:
         raise HTTPException(status_code=404, detail="VM not found")
 
     item["status"] = VMStatus.running.value
-    item["updated_at"] = datetime.now(timezone.utc).isoformat()
+    item["updated_at"] = datetime.now(UTC).isoformat()
     await container.replace_item(item=vm_name, body=item)
     return {"acknowledged": True}
 
@@ -199,7 +204,7 @@ async def notify_vm_evicted(
         raise HTTPException(status_code=404, detail="VM not found")
 
     item["status"] = VMStatus.evicted.value
-    item["updated_at"] = datetime.now(timezone.utc).isoformat()
+    item["updated_at"] = datetime.now(UTC).isoformat()
     await instances_container.replace_item(item=vm_name, body=item)
 
     # Delete the old VM's Azure resources so they stop consuming Spot vCPU quota

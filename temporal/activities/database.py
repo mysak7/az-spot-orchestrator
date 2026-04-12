@@ -1,8 +1,9 @@
 """Database-related Temporal activities (Azure Cosmos DB)."""
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from azure.core.exceptions import ResourceNotFoundError
 from temporalio import activity
@@ -22,15 +23,13 @@ async def update_vm_status(input: UpdateVMStatusInput) -> None:
     """
     container = get_instances_container()
     try:
-        item = await container.read_item(
-            item=input.vm_name, partition_key=input.vm_name
-        )
+        item = await container.read_item(item=input.vm_name, partition_key=input.vm_name)
     except ResourceNotFoundError:
         logger.warning("update_vm_status: VM '%s' not found in Cosmos DB", input.vm_name)
         return
 
     item["status"] = input.status
-    item["updated_at"] = datetime.now(timezone.utc).isoformat()
+    item["updated_at"] = datetime.now(UTC).isoformat()
     if input.ip_address is not None:
         item["ip_address"] = input.ip_address
     if input.region is not None:
