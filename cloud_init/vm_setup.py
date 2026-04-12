@@ -107,26 +107,36 @@ def generate_cloud_init(
           - systemctl enable eviction-monitor
           - systemctl start eviction-monitor
 
-          # Wait for Ollama to accept connections (up to 5 min)
+          # Wait for Ollama, pull or restore model from cache, then notify ready.
+          # All in one block so variables (VM_REGION, SOURCE_RESP, UPLOAD_URL) persist.
           - |
+            # --- Wait for Ollama to accept connections (up to 5 min) ---
             for i in $(seq 1 30); do
               curl -sf http://localhost:11434/api/tags > /dev/null && break
               sleep 10
             done
 
-          # Get best source for model (blob or Ollama) from control plane
-          - |
-            export VM_REGION="{{{{ REGION }}}}"
-            export SOURCE_RESP=$(curl -sf "{control_plane_url}/api/storage/cache/source?model_identifier={model_identifier}&region=$VM_REGION" 2>/dev/null || echo "{{}}")
-            export SOURCE=$(echo "$SOURCE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('source','ollama'))" 2>/dev/null || echo "ollama")
+            # --- Detect this VM's region from IMDS ---
+            VM_REGION=$(curl -sf -H "Metadata: true" \
+              "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-02-01&format=text" \
+              2>/dev/null || echo "")
 
-          # If model is cached in blob storage, download and import it
-          - |
+            # --- Ask the control plane for the best model source ---
+            SOURCE_RESP=$(curl -sf \
+              "{control_plane_url}/api/storage/cache/source?model_identifier={model_identifier}&region=$VM_REGION" \
+              2>/dev/null || echo "{{}}")
+            SOURCE=$(echo "$SOURCE_RESP" | python3 -c \
+              "import sys,json; print(json.load(sys.stdin).get('source','ollama'))" 2>/dev/null || echo "ollama")
+            UPLOAD_URL=$(echo "$SOURCE_RESP" | python3 -c \
+              "import sys,json; print(json.load(sys.stdin).get('upload_url',''))" 2>/dev/null || echo "")
+
+            # --- Blob cache path ---
             if [ "$SOURCE" != "ollama" ]; then
               echo "=== Model cache source: $SOURCE ==="
-              DOWNLOAD_URL=$(echo "$SOURCE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('download_url',''))" 2>/dev/null || echo "")
-              UPLOAD_URL=$(echo "$SOURCE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('upload_url',''))" 2>/dev/null || echo "")
-              SOURCE_REGION=$(echo "$SOURCE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('source_region',''))" 2>/dev/null || echo "")
+              DOWNLOAD_URL=$(echo "$SOURCE_RESP" | python3 -c \
+                "import sys,json; print(json.load(sys.stdin).get('download_url',''))" 2>/dev/null || echo "")
+              SOURCE_REGION=$(echo "$SOURCE_RESP" | python3 -c \
+                "import sys,json; print(json.load(sys.stdin).get('source_region',''))" 2>/dev/null || echo "")
 
               if [ -n "$DOWNLOAD_URL" ]; then
                 echo "Downloading model from $SOURCE_REGION..."
@@ -141,61 +151,57 @@ def generate_cloud_init(
                   END=$(date +%s)
                   DURATION=$((END - START))
                   echo "Download and import took $DURATION seconds"
-                  # Log download timing
                   curl -sf -X POST "{control_plane_url}/api/storage/cache/download-log" \
                     -H "Content-Type: application/json" \
                     -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"source_region\\":\\"$SOURCE_REGION\\",\\"duration_seconds\\":$DURATION}}" 2>/dev/null || true
-                  exit 0
+                  # Skip Ollama pull; fall through to ready notification
+                  SOURCE="blob_done"
                 fi
               fi
             fi
 
-          # Fallback: pull model from Ollama and upload to blob
-          - |
-            echo "=== Pulling model from Ollama ==="
-            if ! ollama pull {model_identifier}; then
-              echo "ERROR: Model pull failed"
-              exit 1
-            fi
+            # --- Ollama fallback: pull then upload to blob ---
+            if [ "$SOURCE" = "ollama" ]; then
+              echo "=== Pulling model from Ollama ==="
+              if ! ollama pull {model_identifier}; then
+                echo "ERROR: Model pull failed"
+                exit 1
+              fi
 
-            # Upload model to blob storage for caching
-            if [ -n "$UPLOAD_URL" ]; then
-              echo "Uploading model to blob storage..."
-              # Install azcopy for large file uploads
-              (
-                curl -sL "https://aka.ms/downloadazcopy-v10-linux" -o /tmp/azcopy.tgz 2>/dev/null && \
-                tar -xzf /tmp/azcopy.tgz --strip-components=1 -C /usr/local/bin/ --wildcards '*/azcopy' 2>/dev/null && \
-                chmod +x /usr/local/bin/azcopy
-              ) || true
+              if [ -n "$UPLOAD_URL" ]; then
+                echo "Uploading model to blob storage..."
+                (
+                  curl -sL "https://aka.ms/downloadazcopy-v10-linux" -o /tmp/azcopy.tgz 2>/dev/null && \
+                  tar -xzf /tmp/azcopy.tgz --strip-components=1 -C /usr/local/bin/ --wildcards '*/azcopy' 2>/dev/null && \
+                  chmod +x /usr/local/bin/azcopy
+                ) || true
 
-              START=$(date +%s)
-              echo "Creating model archive..."
-              tar -czf /tmp/model.tar.gz -C /mnt/resource models/ 2>/dev/null || true
+                START=$(date +%s)
+                echo "Creating model archive..."
+                tar -czf /tmp/model.tar.gz -C /mnt/resource models/ 2>/dev/null || true
 
-              if [ -f /tmp/model.tar.gz ]; then
-                SIZE=$(stat -c%s /tmp/model.tar.gz 2>/dev/null || echo 0)
-                echo "Uploading $SIZE bytes to blob storage..."
-                if command -v azcopy &> /dev/null; then
-                  azcopy copy /tmp/model.tar.gz "$UPLOAD_URL" --overwrite=false 2>/dev/null || true
-                else
-                  # Fallback: use curl for upload if file is small enough
-                  if [ "$SIZE" -lt 262144000 ]; then
-                    curl -sf -X PUT -H "x-ms-blob-type: BlockBlob" --data-binary @/tmp/model.tar.gz "$UPLOAD_URL" 2>/dev/null || true
+                if [ -f /tmp/model.tar.gz ]; then
+                  SIZE=$(stat -c%s /tmp/model.tar.gz 2>/dev/null || echo 0)
+                  echo "Uploading $SIZE bytes to blob storage..."
+                  if command -v azcopy &> /dev/null; then
+                    azcopy copy /tmp/model.tar.gz "$UPLOAD_URL" --overwrite=false 2>/dev/null || true
+                  else
+                    if [ "$SIZE" -lt 262144000 ]; then
+                      curl -sf -X PUT -H "x-ms-blob-type: BlockBlob" --data-binary @/tmp/model.tar.gz "$UPLOAD_URL" 2>/dev/null || true
+                    fi
                   fi
+                  rm -f /tmp/model.tar.gz
                 fi
-                rm -f /tmp/model.tar.gz
-              fi
-              END=$(date +%s)
-              DURATION=$((END - START))
+                END=$(date +%s)
+                DURATION=$((END - START))
 
-              # Notify control plane that upload is complete
-              curl -sf -X POST "{control_plane_url}/api/storage/cache/complete" \
-                -H "Content-Type: application/json" \
-                -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"size_bytes\\":$SIZE,\\"duration_seconds\\":$DURATION}}" 2>/dev/null || true
+                curl -sf -X POST "{control_plane_url}/api/storage/cache/complete" \
+                  -H "Content-Type: application/json" \
+                  -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"size_bytes\\":${{SIZE:-0}},\\"duration_seconds\\":$DURATION}}" 2>/dev/null || true
+              fi
             fi
 
-          # Notify control plane that this VM is ready
-          - |
+            # --- Notify control plane that this VM is ready ---
             curl -sf -X POST {control_plane_url}/api/vms/{vm_name}/ready \
               -H 'Content-Type: application/json' \
               -d '{{"status":"running"}}' || true
