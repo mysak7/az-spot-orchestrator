@@ -12,6 +12,7 @@ import logging
 
 from azure.cosmos import PartitionKey
 from azure.cosmos.aio import ContainerProxy, CosmosClient
+from azure.identity.aio import DefaultAzureCredential
 
 from config import DEFAULT_MODELS, get_settings
 from db.models import LLMModel
@@ -30,7 +31,7 @@ def _get_client() -> CosmosClient:
     global _client
     if _client is None:
         s = get_settings()
-        _client = CosmosClient(url=s.cosmos_endpoint, credential=s.cosmos_key)
+        _client = CosmosClient(url=s.cosmos_endpoint, credential=DefaultAzureCredential())
     return _client
 
 

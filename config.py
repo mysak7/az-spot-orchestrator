@@ -40,15 +40,11 @@ DEFAULT_MODELS: list[DefaultModel] = [
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    # Azure Cosmos DB (app state store)
+    # Azure Cosmos DB
     cosmos_endpoint: str = ""
-    cosmos_key: str = ""
 
-    # Azure service principal
+    # Azure (auth via managed identity — DefaultAzureCredential, no secrets needed)
     azure_subscription_id: str = ""
-    azure_tenant_id: str = ""
-    azure_client_id: str = ""
-    azure_client_secret: str = ""
     azure_resource_group: str = "az-spot-orchestrator-rg"
     azure_ssh_public_key: str = ""
 

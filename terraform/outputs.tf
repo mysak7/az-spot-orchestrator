@@ -4,14 +4,8 @@ output "control_plane_public_ip" {
 }
 
 output "cosmos_endpoint" {
-  description = "Cosmos DB endpoint — set as COSMOS_ENDPOINT in .env"
+  description = "Cosmos DB endpoint — auto-set as COSMOS_ENDPOINT Actions variable by terraform apply"
   value       = azurerm_cosmosdb_account.main.endpoint
-}
-
-output "cosmos_primary_key" {
-  description = "Cosmos DB primary key — set as COSMOS_KEY in .env"
-  value       = azurerm_cosmosdb_account.main.primary_key
-  sensitive   = true
 }
 
 output "resource_group_name" {

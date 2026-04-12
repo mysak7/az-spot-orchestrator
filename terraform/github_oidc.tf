@@ -98,3 +98,22 @@ resource "github_actions_variable" "control_plane_url" {
   variable_name = "CONTROL_PLANE_URL"
   value         = "http://${azurerm_public_ip.main.ip_address}"
 }
+
+resource "github_actions_variable" "cosmos_endpoint" {
+  repository    = "az-spot-orchestrator"
+  variable_name = "COSMOS_ENDPOINT"
+  value         = azurerm_cosmosdb_account.main.endpoint
+}
+
+resource "github_actions_variable" "azure_resource_group" {
+  repository    = "az-spot-orchestrator"
+  variable_name = "AZURE_RESOURCE_GROUP"
+  value         = azurerm_resource_group.main.name
+}
+
+# Public key is not sensitive — safe to store as a plain variable.
+resource "github_actions_variable" "azure_ssh_public_key" {
+  repository    = "az-spot-orchestrator"
+  variable_name = "AZURE_SSH_PUBLIC_KEY"
+  value         = local.ssh_public_key
+}

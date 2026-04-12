@@ -12,7 +12,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from azure.identity.aio import ClientSecretCredential
+from azure.identity.aio import DefaultAzureCredential
 from azure.storage.blob import BlobSasPermissions, generate_blob_sas
 from azure.storage.blob.aio import BlobServiceClient
 
@@ -65,11 +65,7 @@ async def _get_delegation_key() -> object:
     s = get_settings()
     expiry = now + timedelta(hours=1)
     account_url = f"https://{s.azure_storage_account_name}.blob.core.windows.net"
-    async with ClientSecretCredential(
-        tenant_id=s.azure_tenant_id,
-        client_id=s.azure_client_id,
-        client_secret=s.azure_client_secret,
-    ) as credential:
+    async with DefaultAzureCredential() as credential:
         async with BlobServiceClient(account_url=account_url, credential=credential) as client:
             key = await client.get_user_delegation_key(
                 key_start_time=now - timedelta(minutes=5),  # small buffer for clock skew

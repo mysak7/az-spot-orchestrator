@@ -216,6 +216,12 @@ resource "azurerm_linux_virtual_machine" "main" {
 
   network_interface_ids = [azurerm_network_interface.main.id]
 
+  # System-assigned managed identity — the app uses this instead of a service
+  # principal + secret.  DefaultAzureCredential picks it up automatically.
+  identity {
+    type = "SystemAssigned"
+  }
+
   admin_ssh_key {
     username   = "azureuser"
     public_key = local.ssh_public_key
@@ -251,4 +257,38 @@ resource "azurerm_linux_virtual_machine" "main" {
     systemctl enable --now docker
   EOT
   )
+}
+
+# ── Managed Identity role assignments ──────────────────────────────────────────
+# The control-plane VM's identity gets the minimum set of roles it needs to
+# operate without any stored credentials.
+
+# VM provisioning — create/delete Spot VMs, NICs, public IPs
+resource "azurerm_role_assignment" "vm_identity_contributor" {
+  scope                = azurerm_resource_group.main.id
+  role_definition_name = "Contributor"
+  principal_id         = azurerm_linux_virtual_machine.main.identity[0].principal_id
+}
+
+# Blob storage — generate user-delegation SAS tokens for model cache
+resource "azurerm_role_assignment" "vm_identity_blob_delegator" {
+  scope                = azurerm_storage_account.model_cache.id
+  role_definition_name = "Storage Blob Delegator"
+  principal_id         = azurerm_linux_virtual_machine.main.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "vm_identity_blob_data" {
+  scope                = azurerm_storage_account.model_cache.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_linux_virtual_machine.main.identity[0].principal_id
+}
+
+# Cosmos DB — read/write data (built-in Data Contributor role)
+resource "azurerm_cosmosdb_sql_role_assignment" "vm_identity_cosmos" {
+  resource_group_name = azurerm_resource_group.main.name
+  account_name        = azurerm_cosmosdb_account.main.name
+  # "Cosmos DB Built-in Data Contributor" — fixed well-known GUID
+  role_definition_id  = "${azurerm_cosmosdb_account.main.id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002"
+  principal_id        = azurerm_linux_virtual_machine.main.identity[0].principal_id
+  scope               = azurerm_cosmosdb_account.main.id
 }
