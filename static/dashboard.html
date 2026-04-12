@@ -242,6 +242,7 @@
   .badge-terminated   { background: rgba(72,79,88,0.15);   color: #6e7681; border: 1px solid #30363d; }
   .badge-available    { background: rgba(63,185,80,0.15);  color: #56d364; border: 1px solid #3fb950; }
   .badge-uploading    { background: rgba(210,153,34,0.15); color: #e3b341; border: 1px solid #d29922; }
+  .badge-failed       { background: rgba(248,81,73,0.15);  color: #ff7b72; border: 1px solid #f85149; }
 
   /* ── Modal / Form ── */
   .modal-backdrop {
@@ -621,7 +622,7 @@
     return sec >= 60 ? `${(sec / 60).toFixed(1)} min` : `${sec.toFixed(0)} s`;
   }
 
-  function statusBadge(status) {
+  function statusBadge(status, phase) {
     const cls = {
       pending:      'badge-pending',
       provisioning: 'badge-provisioning',
@@ -631,8 +632,10 @@
       terminated:   'badge-terminated',
       available:    'badge-available',
       uploading:    'badge-uploading',
+      failed:       'badge-failed',
     }[status] || 'badge-pending';
-    return `<span class="badge ${cls}">${status}</span>`;
+    const label = (status === 'uploading' && phase) ? `${status}: ${phase}` : status;
+    return `<span class="badge ${cls}">${label}</span>`;
   }
 
   function esc(s) {
@@ -726,7 +729,7 @@
       <tr>
         <td class="mono"><strong>${esc(e.model_identifier)}</strong></td>
         <td class="mono muted">${esc(e.region)}</td>
-        <td>${statusBadge(e.status)}</td>
+        <td>${statusBadge(e.status, e.current_phase)}</td>
         <td class="mono">${fmtBytes(e.size_bytes)}</td>
         <td class="muted">${fmtDuration(e.upload_duration_seconds)}</td>
         <td class="mono" style="text-align:center">${e.download_count ?? 0}</td>
