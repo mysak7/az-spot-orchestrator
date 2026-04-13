@@ -212,7 +212,7 @@ resource "azurerm_linux_virtual_machine" "main" {
   name                = "${local.project}-vm"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
-  size                = "Standard_B2s"
+  size                = "Standard_D2s_v3"
   admin_username      = "azureuser"
 
   network_interface_ids = [azurerm_network_interface.main.id]
