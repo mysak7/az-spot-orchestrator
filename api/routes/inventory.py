@@ -467,7 +467,13 @@ def _activity_info(pending: list) -> dict | None:
     name: str = getattr(getattr(act, "activity_type", None), "name", "") or ""
     attempt: int = getattr(act, "attempt", 1)
     state_val = getattr(act, "state", None)
-    state_str = state_val.name if state_val is not None else "UNKNOWN"
+    # state may be an enum or a raw int depending on SDK/protobuf version
+    if state_val is None:
+        state_str = "UNKNOWN"
+    elif hasattr(state_val, "name"):
+        state_str = state_val.name
+    else:
+        state_str = str(state_val)
 
     last_failure_msg: str | None = None
     lf = getattr(act, "last_failure", None)
@@ -501,12 +507,21 @@ async def get_bare_vm_status(workflow_id: str, request: FastAPIRequest) -> dict:
 
         if wf_status == WorkflowExecutionStatus.COMPLETED:
             result = await handle.result()
+            # handle.result() without result_type returns a plain dict from JSON
+            if isinstance(result, dict):
+                vm_name = result.get("vm_name", "")
+                ip_address = result.get("ip_address", "")
+                region = result.get("region", "")
+            else:
+                vm_name = result.vm_name
+                ip_address = result.ip_address
+                region = result.region
             return {
                 "workflow_id": workflow_id,
                 "status": "running",
-                "vm_name": result.vm_name,
-                "ip_address": result.ip_address,
-                "region": result.region,
+                "vm_name": vm_name,
+                "ip_address": ip_address,
+                "region": region,
                 "current_activity": None,
             }
 
@@ -539,3 +554,6 @@ async def get_bare_vm_status(workflow_id: str, request: FastAPIRequest) -> dict:
 
     except RPCError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Unexpected error polling workflow %s: %s", workflow_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
