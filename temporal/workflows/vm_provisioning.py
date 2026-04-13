@@ -12,7 +12,7 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
-    from cloud_init.vm_setup import generate_cloud_init
+    from cloud_init.vm_setup import generate_bare_cloud_init, generate_cloud_init
     from config import get_settings
     from temporal.activities.azure import (
         delete_azure_vm,
@@ -24,6 +24,8 @@ with workflow.unsafe.imports_passed_through():
     from temporal.types import (
         DeleteAzureVMInput,
         GetCheapestRegionInput,
+        LaunchBareVMInput,
+        LaunchBareVMResult,
         ProvisionAzureVMInput,
         ProvisionVMInput,
         ProvisionVMResult,
@@ -202,6 +204,105 @@ class ProvisionVMWorkflow:
         )
 
         return ProvisionVMResult(
+            vm_name=input.vm_name,
+            region=region,
+            ip_address=ip_address,
+        )
+
+
+@workflow.defn
+class LaunchBareVMWorkflow:
+    """Provision a Spot VM with SSH access only — no Ollama/model.
+
+    Useful for ad-hoc GPU exploration, debugging, or manual workloads.
+    Steps:
+      1. Resolve candidate regions (cheapest first, or use the specified region).
+      2. Provision Spot VM with bare cloud-init (SSH + basic tools).
+      3. Return IP address.
+    """
+
+    @workflow.run
+    async def run(self, input: LaunchBareVMInput) -> LaunchBareVMResult:
+        settings = get_settings()
+
+        cloud_init_b64 = generate_bare_cloud_init(
+            vm_name=input.vm_name,
+            control_plane_url=settings.control_plane_url,
+        )
+
+        # If caller specified a region use only that, otherwise rank all candidates.
+        if input.region:
+            regions = [input.region]
+        else:
+            regions = await workflow.execute_activity(
+                get_cheapest_region,
+                GetCheapestRegionInput(
+                    vm_size=input.vm_size,
+                    candidate_regions=settings.azure_candidate_regions,
+                ),
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=_FAST_RETRY,
+            )
+
+        ip_address = ""
+        region = ""
+        last_error: BaseException | None = None
+
+        for candidate in regions:
+            try:
+                ip_address = await workflow.execute_activity(
+                    provision_azure_vm,
+                    ProvisionAzureVMInput(
+                        vm_name=input.vm_name,
+                        resource_group=input.resource_group,
+                        region=candidate,
+                        vm_size=input.vm_size,
+                        model_identifier="",
+                        cloud_init_b64=cloud_init_b64,
+                    ),
+                    start_to_close_timeout=timedelta(minutes=15),
+                    retry_policy=RetryPolicy(maximum_attempts=1),
+                )
+                region = candidate
+                break
+            except ActivityError as exc:
+                if (
+                    isinstance(exc.__cause__, ApplicationError)
+                    and exc.__cause__.type == "SkuNotAvailable"
+                ):
+                    workflow.logger.warning(
+                        "No Spot capacity for %s in %s, trying next region",
+                        input.vm_size,
+                        candidate,
+                    )
+                    await workflow.execute_activity(
+                        delete_azure_vm,
+                        DeleteAzureVMInput(
+                            vm_name=input.vm_name,
+                            resource_group=input.resource_group,
+                        ),
+                        start_to_close_timeout=timedelta(minutes=10),
+                        retry_policy=_FAST_RETRY,
+                    )
+                    last_error = exc
+                    continue
+                await workflow.execute_activity(
+                    delete_azure_vm,
+                    DeleteAzureVMInput(
+                        vm_name=input.vm_name,
+                        resource_group=input.resource_group,
+                    ),
+                    start_to_close_timeout=timedelta(minutes=10),
+                    retry_policy=_FAST_RETRY,
+                )
+                raise
+
+        if not ip_address:
+            raise RuntimeError(
+                f"No region had Spot capacity for {input.vm_size}. Tried: {regions}"
+            ) from last_error
+
+        return LaunchBareVMResult(
             vm_name=input.vm_name,
             region=region,
             ip_address=ip_address,

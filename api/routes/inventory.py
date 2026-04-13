@@ -11,10 +11,13 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 from datetime import UTC, datetime
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
+from fastapi import Request as FastAPIRequest
+from temporalio.client import WorkflowFailureError
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -251,3 +254,93 @@ async def get_spot_inventory(
         "fetched_at": payload["fetched_at"],
         "cached": _cache is not None and not refresh,
     }
+
+
+# ── Bare VM launch ────────────────────────────────────────────────────────────
+
+class _LaunchRequest:
+    def __init__(self, vm_size: str, region: str | None):
+        self.vm_size = vm_size
+        self.region = region
+
+
+from pydantic import BaseModel  # noqa: E402
+
+
+class LaunchBareVMRequest(BaseModel):
+    vm_size: str
+    region: str | None = None
+
+
+@router.post("/inventory/launch-vm")
+async def launch_bare_vm(body: LaunchBareVMRequest, request: FastAPIRequest) -> dict:
+    """Start a bare Spot VM (SSH only, no model) via Temporal.
+
+    Returns immediately with the workflow_id and vm_name.
+    Poll GET /api/inventory/bare-vms/{workflow_id} for IP + status.
+    """
+    from config import get_settings
+    from temporal.types import LaunchBareVMInput
+    from temporal.workflows.vm_provisioning import LaunchBareVMWorkflow
+
+    settings = get_settings()
+    short_id = uuid.uuid4().hex[:8]
+    vm_name = f"bare-{short_id}"
+
+    temporal_client = request.app.state.temporal_client
+
+    handle = await temporal_client.start_workflow(
+        LaunchBareVMWorkflow.run,
+        LaunchBareVMInput(
+            vm_name=vm_name,
+            resource_group=settings.azure_resource_group,
+            vm_size=body.vm_size,
+            region=body.region,
+        ),
+        id=f"bare-vm-{short_id}",
+        task_queue=settings.temporal_task_queue,
+    )
+
+    logger.info("Started LaunchBareVMWorkflow %s for vm=%s size=%s", handle.id, vm_name, body.vm_size)
+    return {
+        "vm_name": vm_name,
+        "workflow_id": handle.id,
+        "vm_size": body.vm_size,
+        "region": body.region or "auto",
+        "status": "provisioning",
+    }
+
+
+@router.get("/inventory/bare-vms/{workflow_id}")
+async def get_bare_vm_status(workflow_id: str, request: FastAPIRequest) -> dict:
+    """Poll the status of a bare VM launch workflow."""
+    from temporalio.client import WorkflowExecutionStatus
+    from temporalio.service import RPCError
+
+    temporal_client = request.app.state.temporal_client
+
+    try:
+        handle = temporal_client.get_workflow_handle(workflow_id)
+        desc = await handle.describe()
+        status = desc.status
+
+        if status == WorkflowExecutionStatus.COMPLETED:
+            result = await handle.result()
+            return {
+                "workflow_id": workflow_id,
+                "status": "running",
+                "vm_name": result.vm_name,
+                "ip_address": result.ip_address,
+                "region": result.region,
+            }
+        elif status == WorkflowExecutionStatus.FAILED:
+            return {"workflow_id": workflow_id, "status": "failed", "error": "Workflow failed"}
+        elif status == WorkflowExecutionStatus.CANCELED:
+            return {"workflow_id": workflow_id, "status": "cancelled"}
+        else:
+            return {"workflow_id": workflow_id, "status": "provisioning"}
+
+    except RPCError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except WorkflowFailureError as exc:
+        return {"workflow_id": workflow_id, "status": "failed", "error": str(exc)}

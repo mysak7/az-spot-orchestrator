@@ -16,7 +16,7 @@ from temporal.activities.azure import (
     wait_for_model_ready,
 )
 from temporal.activities.database import update_vm_status
-from temporal.workflows.vm_provisioning import DeleteVMWorkflow, ProvisionVMWorkflow
+from temporal.workflows.vm_provisioning import DeleteVMWorkflow, LaunchBareVMWorkflow, ProvisionVMWorkflow
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,7 +32,7 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=settings.temporal_task_queue,
-        workflows=[ProvisionVMWorkflow, DeleteVMWorkflow],
+        workflows=[ProvisionVMWorkflow, DeleteVMWorkflow, LaunchBareVMWorkflow],
         activities=[
             get_cheapest_region,
             provision_azure_vm,

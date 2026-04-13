@@ -252,3 +252,77 @@ def generate_cloud_init(
         package_update: true
     """)
     return base64.b64encode(yaml.encode()).decode()
+
+
+def generate_bare_cloud_init(vm_name: str, control_plane_url: str) -> str:
+    """Return base64-encoded cloud-config YAML for a bare SSH-only Spot VM.
+
+    No Ollama. Installs basic utilities and the eviction monitor, then
+    notifies the control plane that the VM is ready.
+    """
+    yaml = textwrap.dedent(f"""\
+        #cloud-config
+
+        write_files:
+          - path: /usr/local/bin/eviction-monitor.sh
+            permissions: '0755'
+            content: |
+              #!/bin/bash
+              IMDS_URL="http://169.254.169.254/metadata/scheduledevents?api-version=2020-07-01"
+              CONTROL_PLANE="{control_plane_url}"
+              VM_NAME="{vm_name}"
+              NOTIFIED=0
+              while true; do
+                EVENTS=$(curl -sf -H "Metadata: true" "$IMDS_URL" 2>/dev/null)
+                if [ $? -eq 0 ] && [ $NOTIFIED -eq 0 ]; then
+                  EVENT_TYPE=$(echo "$EVENTS" | python3 -c "
+              import sys, json
+              data = json.load(sys.stdin)
+              for e in data.get('Events', []):
+                  if e.get('EventType') == 'Preempt':
+                      print('Preempt')
+                      break
+              " 2>/dev/null)
+                  if [ "$EVENT_TYPE" = "Preempt" ]; then
+                    curl -sf -X POST "$CONTROL_PLANE/api/vms/$VM_NAME/evicted" \\
+                      -H "Content-Type: application/json" \\
+                      -d '{{"reason":"spot_preempt"}}' || true
+                    NOTIFIED=1
+                  fi
+                fi
+                sleep 15
+              done
+
+          - path: /etc/systemd/system/eviction-monitor.service
+            content: |
+              [Unit]
+              Description=Azure Spot eviction monitor
+              After=network-online.target
+              Wants=network-online.target
+
+              [Service]
+              Type=simple
+              ExecStart=/usr/local/bin/eviction-monitor.sh
+              Restart=always
+              RestartSec=5
+
+              [Install]
+              WantedBy=multi-user.target
+
+        packages:
+          - curl
+          - htop
+          - tmux
+          - jq
+          - nvtop
+
+        package_update: true
+
+        runcmd:
+          - systemctl enable eviction-monitor
+          - systemctl start eviction-monitor
+          - curl -sf -X POST {control_plane_url}/api/vms/{vm_name}/ready
+              -H 'Content-Type: application/json'
+              -d '{{"status":"running"}}' || true
+    """)
+    return base64.b64encode(yaml.encode()).decode()

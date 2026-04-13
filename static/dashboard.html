@@ -436,6 +436,72 @@
     font-size: 12px;
     color: var(--yellow);
   }
+
+  /* ── Sortable headers ── */
+  th.sortable {
+    cursor: pointer;
+    user-select: none;
+  }
+
+  th.sortable:hover { color: var(--text); }
+
+  th.sort-asc::after  { content: " ▲"; font-size: 10px; }
+  th.sort-desc::after { content: " ▼"; font-size: 10px; }
+
+  /* ── Bare VM jobs panel ── */
+  .jobs-panel {
+    margin-top: 24px;
+  }
+
+  .jobs-panel h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 10px;
+  }
+
+  .job-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .job-card .job-name { font-family: monospace; font-weight: 600; font-size: 13px; }
+  .job-card .job-detail { color: var(--muted); font-size: 12px; }
+
+  .job-card .ssh-cmd {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 10px;
+    font-family: monospace;
+    font-size: 12px;
+    color: var(--green);
+    margin-left: auto;
+    cursor: pointer;
+    user-select: all;
+  }
+
+  .job-card .ssh-cmd:hover { border-color: var(--green); }
+
+  .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--blue);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -645,6 +711,12 @@
 
       <div id="inv-body">
         <div class="inv-loading">Select "Spot Inventory" to load prices from the Azure Retail API…</div>
+      </div>
+
+      <!-- Active bare VM jobs -->
+      <div class="jobs-panel" id="jobs-panel" style="display:none">
+        <h3>Active VM Jobs</h3>
+        <div id="jobs-list"></div>
       </div>
     </div>
 
@@ -1008,13 +1080,36 @@
       [...regions].sort().map(r => `<option value="${esc(r)}"${r === current ? ' selected' : ''}>${esc(r)}</option>`).join('');
   }
 
+  // ── Inventory sort state ───────────────────────────────────────────────────
+  let _sortCol = 'best_price_usd';
+  let _sortDir = 1; // 1=asc, -1=desc
+
+  function _sortValue(item, col) {
+    if (col === 'best_price_usd') return item.best_price_usd ?? 9999;
+    if (col === 'vm_size')  return item.vm_size.toLowerCase();
+    if (col === 'family')   return item.family.toLowerCase();
+    if (col === 'gpu')      return item.gpu ? item.gpu.toLowerCase() : 'zzz';
+    if (col === 'best_region') return item.best_region ?? 'zzz';
+    return '';
+  }
+
+  function sortInventory(col) {
+    if (_sortCol === col) {
+      _sortDir *= -1;
+    } else {
+      _sortCol = col;
+      _sortDir = col === 'best_price_usd' ? 1 : 1;
+    }
+    filterInventory();
+  }
+
   function filterInventory() {
     if (!_invData) return;
     const search = document.getElementById('inv-search').value.toLowerCase();
     const region = document.getElementById('inv-region-filter').value;
     const gpuOnly = document.getElementById('inv-gpu-only').checked;
 
-    let items = _invData.items;
+    let items = [..._invData.items];
     if (search) items = items.filter(i => i.vm_size.toLowerCase().includes(search));
     if (gpuOnly) items = items.filter(i => i.gpu);
     if (region) {
@@ -1024,6 +1119,15 @@
         return { ...i, regions: rr, best_price_usd: rr[0].price_usd, best_region: rr[0].region };
       }).filter(Boolean);
     }
+
+    const col = _sortCol, dir = _sortDir;
+    items.sort((a, b) => {
+      const va = _sortValue(a, col), vb = _sortValue(b, col);
+      if (va < vb) return -dir;
+      if (va > vb) return dir;
+      return 0;
+    });
+
     renderInventory(items);
   }
 
@@ -1034,7 +1138,13 @@
       return;
     }
 
-    const rows = items.map((i, idx) => {
+    function thSort(col, label) {
+      const active = _sortCol === col;
+      const cls = active ? (_sortDir === 1 ? 'sort-asc' : 'sort-desc') : '';
+      return `<th class="sortable ${cls}" onclick="sortInventory('${col}')">${label}</th>`;
+    }
+
+    const rows = items.map(i => {
       const gpuTag = i.gpu ? `<span class="gpu-tag">${esc(i.gpu)}</span>` : '<span class="muted">—</span>';
       const allRegions = i.regions.map(r =>
         `<span>${esc(r.region)}: <strong>$${r.price_usd.toFixed(4)}/hr</strong></span>`
@@ -1053,10 +1163,16 @@
           <div class="regions-list">${allRegions}</div>` : '<span class="muted">—</span>'}
         </td>
         <td>
-          <button class="btn btn-ghost" style="font-size:12px;padding:3px 8px"
-            onclick="useVmSize('${esc(i.vm_size)}')">
-            Use this SKU
-          </button>
+          <div class="actions">
+            <button class="btn btn-ghost" style="font-size:12px;padding:3px 8px"
+              onclick="useVmSize('${esc(i.vm_size)}')">
+              Use as Model SKU
+            </button>
+            <button class="btn btn-success" style="font-size:12px;padding:3px 8px"
+              onclick="openLaunchModal('${esc(i.vm_size)}','${esc(i.best_region||'')}')">
+              Launch VM
+            </button>
+          </div>
         </td>
       </tr>`;
     }).join('');
@@ -1065,11 +1181,11 @@
       <table>
         <thead>
           <tr>
-            <th>VM Size</th>
-            <th>Family</th>
-            <th>GPU</th>
-            <th>Best Price</th>
-            <th>Best Region</th>
+            ${thSort('vm_size','VM Size')}
+            ${thSort('family','Family')}
+            ${thSort('gpu','GPU')}
+            ${thSort('best_price_usd','Best Price')}
+            ${thSort('best_region','Best Region')}
             <th>Other Regions</th>
             <th></th>
           </tr>
@@ -1091,6 +1207,98 @@
     navigate('models');
     openRegisterModal();
     toast(`VM size set to ${vmSize}`, 'success');
+  }
+
+  // ── Launch Bare VM ─────────────────────────────────────────────────────────
+  let _activeJobs = {}; // workflow_id → job obj
+
+  function openLaunchModal(vmSize, bestRegion) {
+    const region = prompt(
+      `Launch bare Spot VM\n\nVM Size: ${vmSize}\n\nEnter region (leave blank for cheapest):`,
+      bestRegion || ''
+    );
+    if (region === null) return; // cancelled
+    launchBareVM(vmSize, region.trim() || null);
+  }
+
+  async function launchBareVM(vmSize, region) {
+    try {
+      const res = await apiFetch('/api/inventory/launch-vm', {
+        method: 'POST',
+        body: JSON.stringify({ vm_size: vmSize, region: region || null }),
+      });
+      toast(`Provisioning ${res.vm_name} (${vmSize})…`, 'success');
+      _trackJob(res);
+    } catch (err) {
+      toast(`Launch failed: ${err.message}`, 'error');
+    }
+  }
+
+  function _trackJob(job) {
+    _activeJobs[job.workflow_id] = { ...job, started_at: Date.now() };
+    _renderJobs();
+    _pollJob(job.workflow_id);
+  }
+
+  function _renderJobs() {
+    const panel = document.getElementById('jobs-panel');
+    const list  = document.getElementById('jobs-list');
+    const jobs  = Object.values(_activeJobs);
+    if (!jobs.length) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+
+    list.innerHTML = jobs.map(j => {
+      if (j.status === 'running') {
+        return `<div class="job-card">
+          <span style="color:var(--green)">●</span>
+          <span class="job-name">${esc(j.vm_name)}</span>
+          <span class="job-detail">${esc(j.vm_size)} · ${esc(j.region || 'auto')}</span>
+          <span class="job-detail">IP: <strong style="color:var(--text)">${esc(j.ip_address)}</strong></span>
+          <code class="ssh-cmd" title="Click to copy" onclick="navigator.clipboard.writeText(this.textContent);toast('Copied!','success')">ssh azureuser@${esc(j.ip_address)}</code>
+          <button class="btn btn-danger" style="font-size:12px;padding:3px 8px;margin-left:auto" onclick="dismissJob('${esc(j.workflow_id)}')">Dismiss</button>
+        </div>`;
+      }
+      if (j.status === 'failed') {
+        return `<div class="job-card">
+          <span style="color:var(--red)">✖</span>
+          <span class="job-name">${esc(j.vm_name)}</span>
+          <span class="job-detail" style="color:var(--red)">${esc(j.error || 'Failed')}</span>
+          <button class="btn btn-ghost" style="font-size:12px;padding:3px 8px;margin-left:auto" onclick="dismissJob('${esc(j.workflow_id)}')">Dismiss</button>
+        </div>`;
+      }
+      const elapsed = Math.round((Date.now() - j.started_at) / 1000);
+      return `<div class="job-card">
+        <div class="spinner"></div>
+        <span class="job-name">${esc(j.vm_name)}</span>
+        <span class="job-detail">${esc(j.vm_size)} · ${esc(j.region || 'auto')}</span>
+        <span class="job-detail muted">${elapsed}s elapsed…</span>
+      </div>`;
+    }).join('');
+  }
+
+  async function _pollJob(workflowId) {
+    while (true) {
+      await new Promise(r => setTimeout(r, 5000));
+      const job = _activeJobs[workflowId];
+      if (!job || job.status === 'running' || job.status === 'failed') break;
+      try {
+        const res = await apiFetch(`/api/inventory/bare-vms/${encodeURIComponent(workflowId)}`);
+        _activeJobs[workflowId] = { ..._activeJobs[workflowId], ...res };
+        _renderJobs();
+        if (res.status === 'running') {
+          toast(`VM ${res.vm_name} ready at ${res.ip_address}`, 'success');
+          break;
+        }
+        if (res.status === 'failed') break;
+      } catch (err) {
+        // keep polling on transient errors
+      }
+    }
+  }
+
+  function dismissJob(workflowId) {
+    delete _activeJobs[workflowId];
+    _renderJobs();
   }
 
   // ── Boot ───────────────────────────────────────────────────────────────────

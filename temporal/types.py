@@ -61,3 +61,18 @@ class UpdateVMStatusInput:
 class DeleteAzureVMInput:
     vm_name: str
     resource_group: str
+
+
+@dataclass
+class LaunchBareVMInput:
+    vm_name: str
+    resource_group: str
+    vm_size: str
+    region: str | None = None  # None = auto-select cheapest
+
+
+@dataclass
+class LaunchBareVMResult:
+    vm_name: str
+    region: str
+    ip_address: str
