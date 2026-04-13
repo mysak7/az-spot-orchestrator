@@ -564,7 +564,7 @@ async def get_bare_vm_status(workflow_id: str, request: FastAPIRequest) -> dict:
         return {
             "workflow_id": workflow_id,
             "status": "provisioning",
-            "current_activity": _activity_info(desc.pending_activities or []),
+            "current_activity": _activity_info(list(desc.raw_description.pending_activities) or []),
         }
 
     except RPCError as exc:
