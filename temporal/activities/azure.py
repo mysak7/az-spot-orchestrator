@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 import httpx
 from azure.core.exceptions import HttpResponseError, ResourceExistsError, ResourceNotFoundError
@@ -25,6 +26,15 @@ from temporal.types import (
 logger = logging.getLogger(__name__)
 
 _PRICING_URL = "https://prices.azure.com/api/retail/prices"
+
+
+def _is_arm_vm_size(vm_size: str) -> bool:
+    """Return True if the VM size requires an ARM64 OS image.
+
+    Azure ARM (Ampere Altra) sizes have 'p' immediately after the vCPU count,
+    e.g. Standard_D2ps_v5, Standard_E4pls_v5, Standard_D8pds_v5.
+    """
+    return bool(re.search(r"\d+p[a-z]", vm_size, re.IGNORECASE))
 
 
 async def _filter_sku_available_regions(
@@ -380,6 +390,8 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
         nic = await nic_poller.result()
 
         # ── Spot VM ───────────────────────────────────────────────────────
+        image_sku = "22_04-lts-arm64" if _is_arm_vm_size(input.vm_size) else "22_04-lts"
+        logger.info("VM %s: size=%s → image sku=%s", input.vm_name, input.vm_size, image_sku)
         try:
             vm_poller = await comp.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]
                 input.resource_group,
@@ -391,7 +403,7 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
                         "image_reference": {
                             "publisher": "Canonical",
                             "offer": "0001-com-ubuntu-server-jammy",
-                            "sku": "22_04-lts",
+                            "sku": image_sku,
                             "version": "latest",
                         },
                         "os_disk": {

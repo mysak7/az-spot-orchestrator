@@ -1242,7 +1242,27 @@
   }
 
   // ── Launch Bare VM ─────────────────────────────────────────────────────────
+  const _JOBS_KEY = 'az-spot-jobs-v1';
   let _activeJobs = {}; // workflow_id → job obj
+
+  function _persistJobs() {
+    try { localStorage.setItem(_JOBS_KEY, JSON.stringify(_activeJobs)); } catch (_) {}
+  }
+
+  function _restoreJobs() {
+    try {
+      const raw = localStorage.getItem(_JOBS_KEY);
+      if (!raw) return;
+      _activeJobs = JSON.parse(raw);
+      _renderJobs();
+      // Resume polling for any jobs that were still in-flight
+      for (const [wfId, job] of Object.entries(_activeJobs)) {
+        if (job.status !== 'running' && job.status !== 'failed' && job.status !== 'cancelled') {
+          _pollJob(wfId);
+        }
+      }
+    } catch (_) {}
+  }
 
   function openLaunchModal(vmSize, bestRegion) {
     const region = prompt(
@@ -1277,6 +1297,7 @@
     job.logs.push({ time: _now(), msg, level });
     // keep last 50 lines
     if (job.logs.length > 50) job.logs.shift();
+    _persistJobs();
   }
 
   function _trackJob(job) {
@@ -1287,6 +1308,7 @@
       last_activity: null,
     };
     _addLog(job.workflow_id, `Started — ${job.vm_size} · region: ${job.region || 'auto'}`, '');
+    _persistJobs();
     _renderJobs();
     _pollJob(job.workflow_id);
   }
@@ -1323,13 +1345,16 @@
         </div>`;
       }
       if (j.status === 'failed') {
+        const errLog = (j.logs || []).slice().reverse().find(l => l.level === 'error');
+        const errMsg = errLog ? errLog.msg.replace(/^Failed:\s*/i, '') : (j.error || 'unknown error');
         return `<div class="job-card" style="border-color:var(--red)">
           <div class="job-card-header">
             <span style="color:var(--red);font-size:16px">✖</span>
             <span class="job-name">${esc(j.vm_name)}</span>
-            <span class="job-detail" style="color:var(--red)">${esc(j.vm_size)}</span>
+            <span class="job-detail" style="color:var(--muted)">${esc(j.vm_size)}</span>
             <button class="btn btn-ghost" style="font-size:12px;padding:3px 8px;margin-left:auto" onclick="dismissJob('${esc(j.workflow_id)}')">Dismiss</button>
           </div>
+          <div style="margin-top:6px;font-size:12px;color:var(--red);word-break:break-word">${esc(errMsg)}</div>
           ${_renderJobLog(j.logs)}
         </div>`;
       }
@@ -1398,6 +1423,7 @@
           logs: _activeJobs[workflowId].logs,
           last_activity: act || _activeJobs[workflowId].last_activity,
         };
+        _persistJobs();
         _renderJobs();
 
         if (res.status === 'running') {
@@ -1414,10 +1440,12 @@
 
   function dismissJob(workflowId) {
     delete _activeJobs[workflowId];
+    _persistJobs();
     _renderJobs();
   }
 
   // ── Boot ───────────────────────────────────────────────────────────────────
+  _restoreJobs();
   refresh();
   setInterval(refresh, 5000);
 </script>
