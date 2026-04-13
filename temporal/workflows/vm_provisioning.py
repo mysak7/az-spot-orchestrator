@@ -158,8 +158,9 @@ class ProvisionVMWorkflow:
                 UpdateVMStatusInput(vm_name=input.vm_name, status="terminated"),
                 start_to_close_timeout=timedelta(minutes=2),
             )
-            raise RuntimeError(
-                f"No region had Spot capacity for {input.vm_size}. Tried: {regions}"
+            raise ApplicationError(
+                f"No region had Spot capacity for {input.vm_size}. Tried: {regions}",
+                non_retryable=True,
             ) from last_error
 
         # ── Step 3: mark provisioning ──────────────────────────────────────
@@ -266,10 +267,8 @@ class LaunchBareVMWorkflow:
                 region = candidate
                 break
             except ActivityError as exc:
-                if (
-                    isinstance(exc.__cause__, ApplicationError)
-                    and exc.__cause__.type == "SkuNotAvailable"
-                ):
+                cause = exc.__cause__
+                if isinstance(cause, ApplicationError) and cause.type == "SkuNotAvailable":
                     workflow.logger.warning(
                         "No Spot capacity for %s in %s, trying next region",
                         input.vm_size,
@@ -286,6 +285,8 @@ class LaunchBareVMWorkflow:
                     )
                     last_error = exc
                     continue
+                # Non-capacity failure — clean up then surface as ApplicationError
+                # so Temporal marks the workflow FAILED (not retries as task failure).
                 await workflow.execute_activity(
                     delete_azure_vm,
                     DeleteAzureVMInput(
@@ -295,11 +296,15 @@ class LaunchBareVMWorkflow:
                     start_to_close_timeout=timedelta(minutes=10),
                     retry_policy=_FAST_RETRY,
                 )
-                raise
+                raise ApplicationError(
+                    str(cause.message if isinstance(cause, ApplicationError) else exc),
+                    non_retryable=True,
+                ) from exc
 
         if not ip_address:
-            raise RuntimeError(
-                f"No region had Spot capacity for {input.vm_size}. Tried: {regions}"
+            raise ApplicationError(
+                f"No region had Spot capacity for {input.vm_size}. Tried: {regions}",
+                non_retryable=True,
             ) from last_error
 
         return LaunchBareVMResult(
