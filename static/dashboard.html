@@ -1052,8 +1052,11 @@
       renderInventory(data.items);
       const cached = data.cached ? ' · cached' : ' · live';
       const fetched = new Date(data.fetched_at).toLocaleTimeString();
+      const verified = data.subscription_verified
+        ? ' · ✓ subscription filtered'
+        : ' · ⚠ subscription filter skipped (no Azure credentials)';
       document.getElementById('inv-meta').textContent =
-        `${data.total} VM sizes · fetched ${fetched}${cached}`;
+        `${data.total} VM sizes · fetched ${fetched}${cached}${verified}`;
     } catch (err) {
       const msg = err.message || '';
       const is503 = msg.includes('503') || msg.includes('unavailable');

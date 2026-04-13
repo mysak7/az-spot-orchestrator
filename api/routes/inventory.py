@@ -134,6 +134,71 @@ async def _fetch_region(client: httpx.AsyncClient, region: str) -> list[dict]:
     return rows
 
 
+async def _fetch_subscription_available(
+    candidate_regions: list[str],
+) -> dict[str, set[str]]:
+    """Return {region: set_of_lower_vm_sizes} that have no subscription restrictions.
+
+    Uses the Azure Resource SKUs API.  A VM size is considered available when:
+      - It appears in the SKU list for that region, AND
+      - It has no restriction with reason_code 'NotAvailableForSubscription'
+        or 'QuotaId' of type 'Location' (zone-only restrictions are ignored —
+        we provision without pinning to a zone).
+
+    On any error the function returns an empty dict, which causes the caller to
+    skip the availability filter and show all priced VMs (safer than a blank page).
+    """
+    from services.azure_client import compute_client
+
+    # region_lower → set of available vm_size strings (lower-cased)
+    available: dict[str, set[str]] = {r: set() for r in candidate_regions}
+    region_set_lower = {r.lower(): r for r in candidate_regions}
+
+    try:
+        async with compute_client() as comp:
+            # A single list call without location filter returns every region;
+            # filtering server-side is faster than N parallel calls.
+            skus = comp.resource_skus.list(
+                filter="resourceType eq 'virtualMachines'"
+            )
+            async for sku in skus:
+                if sku.resource_type != "virtualMachines":
+                    continue
+                vm_size_lower = (sku.name or "").lower()
+                if not vm_size_lower:
+                    continue
+
+                for loc in sku.locations or []:
+                    canonical = region_set_lower.get(loc.lower())
+                    if not canonical:
+                        continue  # not one of our candidate regions
+
+                    # Check for location-level subscription restrictions only
+                    restricted = False
+                    for r in sku.restrictions or []:
+                        if getattr(r, "type", None) == "Location":
+                            reason = getattr(r, "reason_code", None)
+                            if reason in ("NotAvailableForSubscription", "QuotaId"):
+                                restricted = True
+                                break
+                    if not restricted:
+                        available[canonical].add(vm_size_lower)
+
+        total = sum(len(v) for v in available.values())
+        logger.info(
+            "Subscription SKU check: %d available (vm_size, region) pairs across %d regions",
+            total,
+            len(candidate_regions),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Subscription SKU check failed — showing all priced VMs: %s", exc
+        )
+        return {}  # empty → caller skips filter
+
+    return available
+
+
 async def _fetch_raw_spot_prices(candidate_regions: list[str]) -> list[dict]:
     """Fetch Spot VM prices for all candidate regions in parallel.
 
@@ -160,7 +225,18 @@ async def _fetch_raw_spot_prices(candidate_regions: list[str]) -> list[dict]:
     return rows
 
 
-def _build_inventory(rows: list[dict]) -> dict:
+def _build_inventory(
+    rows: list[dict],
+    available_skus: dict[str, set[str]],
+) -> dict:
+    """Build the inventory dict from raw price rows.
+
+    available_skus: {region → set_of_vm_size_lower} from the Resource SKUs API.
+    If empty (fetch failed / credentials unavailable) the filter is skipped so
+    the page still shows something useful.
+    """
+    skip_filter = not available_skus
+
     # vm_size → region → best_price
     pricing: dict[str, dict[str, float]] = {}
 
@@ -170,6 +246,13 @@ def _build_inventory(rows: list[dict]) -> dict:
         price: float = item.get("retailPrice", float("inf"))
         if not vm_size or not region or price <= 0:
             continue
+
+        # Drop (vm_size, region) pairs the subscription can't use
+        if not skip_filter:
+            region_set = available_skus.get(region, set())
+            if vm_size.lower() not in region_set:
+                continue
+
         bucket = pricing.setdefault(vm_size, {})
         if region not in bucket or price < bucket[region]:
             bucket[region] = price
@@ -185,6 +268,7 @@ def _build_inventory(rows: list[dict]) -> dict:
             "regions": [{"region": r, "price_usd": round(p, 5)} for r, p in sorted_regions],
             "best_price_usd": round(sorted_regions[0][1], 5) if sorted_regions else None,
             "best_region": sorted_regions[0][0] if sorted_regions else None,
+            "subscription_verified": not skip_filter,
         })
 
     # GPU first, then cheapest first
@@ -215,8 +299,12 @@ async def get_spot_inventory(
         try:
             from config import get_settings
             regions = list(get_settings().azure_candidate_regions)
-            rows = await _fetch_raw_spot_prices(regions)
-            payload = _build_inventory(rows)
+            # Fetch prices + subscription SKU availability in parallel
+            rows, available_skus = await asyncio.gather(
+                _fetch_raw_spot_prices(regions),
+                _fetch_subscription_available(regions),
+            )
+            payload = _build_inventory(rows, available_skus)
             _cache = (now, payload)
         except Exception as exc:
             logger.error("Failed to fetch Spot prices: %s", exc)
@@ -248,11 +336,13 @@ async def get_spot_inventory(
                 filtered.append({**i, "regions": region_rows, "best_price_usd": region_rows[0]["price_usd"], "best_region": region})
         items = filtered
 
+    subscription_verified = bool(items) and items[0].get("subscription_verified", False)
     return {
         "items": items,
         "total": len(items),
         "fetched_at": payload["fetched_at"],
         "cached": _cache is not None and not refresh,
+        "subscription_verified": subscription_verified,
     }
 
 
