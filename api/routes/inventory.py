@@ -136,28 +136,24 @@ async def _fetch_region(client: httpx.AsyncClient, region: str) -> list[dict]:
 
 async def _fetch_subscription_available(
     candidate_regions: list[str],
-) -> dict[str, set[str]]:
-    """Return {region: set_of_lower_vm_sizes} that have no subscription restrictions.
+) -> tuple[dict[str, set[str]], dict[str, int]]:
+    """Return (available, vcpu_counts) for VM sizes with no subscription restrictions.
 
-    Uses the Azure Resource SKUs API.  A VM size is considered available when:
-      - It appears in the SKU list for that region, AND
-      - It has no restriction with reason_code 'NotAvailableForSubscription'
-        or 'QuotaId' of type 'Location' (zone-only restrictions are ignored —
-        we provision without pinning to a zone).
+    available: {region → set of lower-cased vm_size strings} — sizes that pass
+      the per-region SKU restriction check (NotAvailableForSubscription / QuotaId).
+    vcpu_counts: {lower-cased vm_size → vCPU count} collected from SKU capabilities.
 
-    On any error the function returns an empty dict, which causes the caller to
-    skip the availability filter and show all priced VMs (safer than a blank page).
+    On any error returns ({}, {}) so the caller skips the filter rather than
+    showing a blank page.
     """
     from services.azure_client import compute_client
 
-    # region_lower → set of available vm_size strings (lower-cased)
     available: dict[str, set[str]] = {r: set() for r in candidate_regions}
     region_set_lower = {r.lower(): r for r in candidate_regions}
+    vcpu_counts: dict[str, int] = {}
 
     try:
         async with compute_client() as comp:
-            # A single list call without location filter returns every region;
-            # filtering server-side is faster than N parallel calls.
             skus = comp.resource_skus.list(
                 filter="resourceType eq 'virtualMachines'"
             )
@@ -168,12 +164,21 @@ async def _fetch_subscription_available(
                 if not vm_size_lower:
                     continue
 
+                # Collect vCPU count once per vm_size from SKU capabilities
+                if vm_size_lower not in vcpu_counts:
+                    for cap in sku.capabilities or []:
+                        if cap.name == "vCPUs":
+                            try:
+                                vcpu_counts[vm_size_lower] = int(cap.value)
+                            except (TypeError, ValueError):
+                                pass
+                            break
+
                 for loc in sku.locations or []:
                     canonical = region_set_lower.get(loc.lower())
                     if not canonical:
-                        continue  # not one of our candidate regions
+                        continue
 
-                    # Check for location-level subscription restrictions only
                     restricted = False
                     for r in sku.restrictions or []:
                         if getattr(r, "type", None) == "Location":
@@ -194,9 +199,37 @@ async def _fetch_subscription_available(
         logger.warning(
             "Subscription SKU check failed — showing all priced VMs: %s", exc
         )
-        return {}  # empty → caller skips filter
+        return {}, {}
 
-    return available
+    return available, vcpu_counts
+
+
+async def _fetch_spot_quota_remaining(region: str) -> int:
+    """Return remaining lowPriorityCores Spot quota for this subscription.
+
+    lowPriorityCores is subscription-wide — the same limit applies in every region,
+    so any one region's usage report is authoritative.  Returns a large sentinel
+    (999999) on any error so the caller skips the filter rather than hiding VMs.
+    """
+    from services.azure_client import compute_client
+
+    _SENTINEL = 999999
+    try:
+        async with compute_client() as comp:
+            async for usage in comp.usage.list(location=region):
+                if getattr(usage.name, "value", None) == "LowPriorityCores":
+                    limit: int = usage.limit or 0
+                    current: int = usage.current_value or 0
+                    remaining = limit - current
+                    logger.info(
+                        "Spot quota (lowPriorityCores): limit=%d used=%d remaining=%d",
+                        limit, current, remaining,
+                    )
+                    return remaining
+        logger.warning("LowPriorityCores usage not found in %s — skipping quota filter", region)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Spot quota fetch failed — skipping quota filter: %s", exc)
+    return _SENTINEL
 
 
 async def _fetch_raw_spot_prices(candidate_regions: list[str]) -> list[dict]:
@@ -228,14 +261,21 @@ async def _fetch_raw_spot_prices(candidate_regions: list[str]) -> list[dict]:
 def _build_inventory(
     rows: list[dict],
     available_skus: dict[str, set[str]],
+    vcpu_counts: dict[str, int],
+    spot_quota_remaining: int,
 ) -> dict:
     """Build the inventory dict from raw price rows.
 
     available_skus: {region → set_of_vm_size_lower} from the Resource SKUs API.
-    If empty (fetch failed / credentials unavailable) the filter is skipped so
-    the page still shows something useful.
+    vcpu_counts: {vm_size_lower → vCPU count} from SKU capabilities.
+    spot_quota_remaining: remaining lowPriorityCores quota (subscription-wide).
+      Pass 999999 when unknown so the filter is effectively skipped.
+
+    Both the SKU filter and the quota filter are skipped when their inputs are
+    unavailable, so the page still shows something useful on API errors.
     """
-    skip_filter = not available_skus
+    skip_sku_filter = not available_skus
+    skip_quota_filter = spot_quota_remaining >= 999999
 
     # vm_size → region → best_price
     pricing: dict[str, dict[str, float]] = {}
@@ -247,10 +287,18 @@ def _build_inventory(
         if not vm_size or not region or price <= 0:
             continue
 
-        # Drop (vm_size, region) pairs the subscription can't use
-        if not skip_filter:
+        vm_size_lower = vm_size.lower()
+
+        # Drop (vm_size, region) pairs the subscription can't use per SKU restrictions
+        if not skip_sku_filter:
             region_set = available_skus.get(region, set())
-            if vm_size.lower() not in region_set:
+            if vm_size_lower not in region_set:
+                continue
+
+        # Drop VM sizes that exceed the subscription-wide Spot vCPU quota
+        if not skip_quota_filter:
+            vcpus = vcpu_counts.get(vm_size_lower, 0)
+            if vcpus > spot_quota_remaining:
                 continue
 
         bucket = pricing.setdefault(vm_size, {})
@@ -268,7 +316,7 @@ def _build_inventory(
             "regions": [{"region": r, "price_usd": round(p, 5)} for r, p in sorted_regions],
             "best_price_usd": round(sorted_regions[0][1], 5) if sorted_regions else None,
             "best_region": sorted_regions[0][0] if sorted_regions else None,
-            "subscription_verified": not skip_filter,
+            "subscription_verified": not skip_sku_filter,
         })
 
     # GPU first, then cheapest first
@@ -299,12 +347,13 @@ async def get_spot_inventory(
         try:
             from config import get_settings
             regions = list(get_settings().azure_candidate_regions)
-            # Fetch prices + subscription SKU availability in parallel
-            rows, available_skus = await asyncio.gather(
+            # Fetch prices, SKU availability, and Spot quota in parallel
+            rows, (available_skus, vcpu_counts), spot_quota_remaining = await asyncio.gather(
                 _fetch_raw_spot_prices(regions),
                 _fetch_subscription_available(regions),
+                _fetch_spot_quota_remaining(regions[0]),
             )
-            payload = _build_inventory(rows, available_skus)
+            payload = _build_inventory(rows, available_skus, vcpu_counts, spot_quota_remaining)
             _cache = (now, payload)
         except Exception as exc:
             logger.error("Failed to fetch Spot prices: %s", exc)
