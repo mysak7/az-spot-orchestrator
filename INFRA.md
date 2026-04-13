@@ -4,23 +4,23 @@
 
 | | |
 |---|---|
-| **Public IP** | `74.241.243.18` |
+| **Public IP** | `135.225.121.221` |
 | **Size** | Standard_D2s_v3 |
 | **Region** | swedencentral |
 | **OS** | Ubuntu 22.04 LTS |
 | **SSH user** | `azureuser` |
-| **SSH** | `ssh azureuser@74.241.243.18` |
+| **SSH** | `ssh azureuser@135.225.121.221` |
 
 ## Endpoints
 
 | Service | URL |
 |---|---|
-| Dashboard | http://74.241.243.18/ |
-| API | http://74.241.243.18/api |
-| API docs | http://74.241.243.18/docs |
-| Temporal UI | http://74.241.243.18:8080 |
+| Dashboard | http://135.225.121.221/ |
+| API | http://135.225.121.221/api |
+| API docs | http://135.225.121.221/docs |
+| Temporal UI | http://135.225.121.221:8080 |
 
-> Access restricted to `78.80.157.131` (NSG rules on ports 22, 80, 8080).
+> Access restricted to your IP (NSG rules on ports 22, 80, 8080).
 
 ## Azure Resources
 
@@ -31,6 +31,16 @@
 | Cosmos DB endpoint | `https://az-spot-orchestrator.documents.azure.com:443/` |
 | Terraform state storage | `azspotorchtfstate` / container `tfstate` |
 | Terraform state RG | `az-spot-orchestrator-tfstate-rg` |
+
+## Cosmos DB containers (Terraform-managed)
+
+| Container | Name |
+|---|---|
+| Model registry | `llm-models` |
+| VM instances | `vm-instances` |
+| Model cache | `model-cache` |
+
+> Schema is owned by Terraform. The app uses these containers directly — it does not create them.
 
 ## Spot VM defaults
 
@@ -45,9 +55,27 @@
 
 | Rule | Port | Source |
 |---|---|---|
-| allow-ssh | 22 | 78.80.157.131 |
-| allow-api | 80 | 78.80.157.131 |
-| allow-temporal-ui | 8080 | 78.80.157.131 |
+| allow-ssh | 22 | your IP |
+| allow-api | 80 | your IP |
+| allow-temporal-ui | 8080 | your IP |
+
+## Post-terraform deploy steps
+
+After `terraform apply`:
+
+1. **Trigger CD** — push any commit to `master` (or re-run the CD workflow in GitHub Actions). This deploys the app and starts all containers including Temporal.
+
+2. **OR deploy manually:**
+   ```bash
+   make deploy
+   ```
+
+3. **Check status:**
+   ```bash
+   ssh azureuser@135.225.121.221 "docker compose -f ~/az-spot-orchestrator/docker-compose.yml ps"
+   ```
+
+> Note: Terraform's cloud-init only installs Docker. The app is deployed separately via CD or `make deploy`.
 
 ## Deployment commands
 
@@ -56,13 +84,13 @@
 make deploy
 
 # SSH into control plane
-ssh azureuser@74.241.243.18
+ssh azureuser@135.225.121.221
 
 # Check running services
-ssh azureuser@74.241.243.18 "docker compose ps"
+ssh azureuser@135.225.121.221 "docker compose -f ~/az-spot-orchestrator/docker-compose.yml ps"
 
 # View logs
-ssh azureuser@74.241.243.18 "docker compose logs -f"
+ssh azureuser@135.225.121.221 "docker compose -f ~/az-spot-orchestrator/docker-compose.yml logs -f"
 ```
 
 ## Environment variables
@@ -76,9 +104,8 @@ make setup
 Key variables:
 
 ```
-CONTROL_PLANE_URL=http://74.241.243.18
+CONTROL_PLANE_URL=http://135.225.121.221
 AZURE_RESOURCE_GROUP=az-spot-orchestrator-rg
 COSMOS_ENDPOINT=https://az-spot-orchestrator.documents.azure.com:443/
-TEMPORAL_HOST=localhost:7233
-DEFAULT_VM_SIZE=Standard_NC4as_T4_v3
+TEMPORAL_HOST=temporal:7233
 ```
