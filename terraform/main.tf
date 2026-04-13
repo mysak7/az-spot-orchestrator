@@ -12,10 +12,7 @@ terraform {
       source  = "integrations/github"
       version = "~> 6.0"
     }
-    time = {
-      source  = "hashicorp/time"
-      version = "~> 0.9"
-    }
+
   }
   required_version = ">= 1.3.0"
 
@@ -74,16 +71,7 @@ resource "azurerm_cosmosdb_account" "main" {
   }
 }
 
-# Cosmos DB account provisioning completes asynchronously; without this delay
-# the SQL database create call arrives while the account is still initialising
-# and Azure returns 400 "account state is not Online".
-resource "time_sleep" "cosmos_account_ready" {
-  depends_on      = [azurerm_cosmosdb_account.main]
-  create_duration = "90s"
-}
-
 resource "azurerm_cosmosdb_sql_database" "main" {
-  depends_on          = [time_sleep.cosmos_account_ready]
   name                = local.project
   resource_group_name = azurerm_resource_group.main.name
   account_name        = azurerm_cosmosdb_account.main.name
