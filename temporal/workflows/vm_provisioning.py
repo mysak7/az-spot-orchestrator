@@ -86,6 +86,9 @@ class ProvisionVMWorkflow:
         )
 
         # ── Step 2: provision VM, falling back through regions on SkuNotAvailable ──
+        # Note: get_cheapest_region raises InsufficientSpotQuota (non_retryable) if
+        # the subscription's lowPriorityCores limit is too low for input.vm_size —
+        # that error propagates out of the loop below without trying any region.
         cloud_init_b64 = generate_cloud_init(
             model_identifier=input.model_identifier,
             control_plane_url=settings.control_plane_url,

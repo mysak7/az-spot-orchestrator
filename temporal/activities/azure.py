@@ -29,14 +29,18 @@ _PRICING_URL = "https://prices.azure.com/api/retail/prices"
 
 async def _filter_sku_available_regions(
     vm_size: str, candidate_regions: list[str]
-) -> list[str]:
+) -> tuple[list[str], int]:
     """Remove regions where vm_size is quota-restricted or not offered.
 
     Uses the Azure Resource SKUs API to check subscription-level restrictions.
     On any API error the original list is returned unchanged.
+
+    Returns (available_regions, vcpu_count) where vcpu_count is the number of
+    vCPUs for vm_size (0 if not determinable).
     """
     restricted: set[str] = set()
     region_lower: dict[str, str] = {r.lower(): r for r in candidate_regions}
+    vcpu_count: int = 0
 
     try:
         async with compute_client() as comp:
@@ -44,6 +48,15 @@ async def _filter_sku_available_regions(
             async for sku in skus:
                 if sku.name != vm_size or sku.resource_type != "virtualMachines":
                     continue
+                # Extract vCPU count from SKU capabilities (same for all regions)
+                if vcpu_count == 0:
+                    for cap in sku.capabilities or []:
+                        if cap.name == "vCPUs":
+                            try:
+                                vcpu_count = int(cap.value)
+                            except (TypeError, ValueError):
+                                pass
+                            break
                 loc_raw: str = (sku.locations or [None])[0] or ""
                 matched = region_lower.get(loc_raw.lower())
                 if not matched:
@@ -61,14 +74,60 @@ async def _filter_sku_available_regions(
                         break
     except Exception as exc:  # noqa: BLE001
         logger.warning("SKU availability check failed, using all regions: %s", exc)
-        return candidate_regions
+        return candidate_regions, vcpu_count
 
     available = [r for r in candidate_regions if r not in restricted]
     if restricted:
         logger.info(
             "Regions after SKU filter: %s (removed: %s)", available, sorted(restricted)
         )
-    return available if available else candidate_regions
+    return (available if available else candidate_regions), vcpu_count
+
+
+async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str) -> None:
+    """Raise InsufficientSpotQuota if the subscription cannot fit vcpu_count Spot cores.
+
+    lowPriorityCores is a subscription-wide limit — Azure does not reflect it in
+    per-region SKU restrictions, so it is invisible to _filter_sku_available_regions.
+    Checking it here prevents the workflow from cycling through every candidate region
+    only to get OperationNotAllowed on each.
+
+    On any API error the check is skipped (fail open).
+    """
+    if vcpu_count == 0:
+        logger.warning("vCPU count unknown for %s — skipping Spot quota pre-check", vm_size)
+        return
+
+    try:
+        async with compute_client() as comp:
+            usages = comp.usage.list(location=region)
+            async for usage in usages:
+                if getattr(usage.name, "value", None) == "LowPriorityCores":
+                    limit: int = usage.limit or 0
+                    current: int = usage.current_value or 0
+                    remaining = limit - current
+                    logger.info(
+                        "Spot quota (lowPriorityCores): limit=%d used=%d remaining=%d, need=%d",
+                        limit,
+                        current,
+                        remaining,
+                        vcpu_count,
+                    )
+                    if vcpu_count > remaining:
+                        raise ApplicationError(
+                            f"Insufficient Spot quota: {vm_size} needs {vcpu_count} vCPUs "
+                            f"but only {remaining} lowPriorityCores remain "
+                            f"(limit={limit}, used={current}). "
+                            "Request a quota increase at aka.ms/AzurePortalQuota.",
+                            type="InsufficientSpotQuota",
+                            non_retryable=True,
+                        )
+                    return
+        logger.warning("LowPriorityCores usage not found in region %s — skipping quota check", region)
+    except ApplicationError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Spot quota pre-check failed, proceeding anyway: %s", exc)
 
 
 async def _get_spot_placement_scores(
@@ -139,10 +198,16 @@ async def get_cheapest_region(input: GetCheapestRegionInput) -> list[str]:
     Regions with no data are appended at the end so the caller can still fall
     back to them.
     """
-    # ── 1. SKU availability filter ────────────────────────────────────────
-    available = await _filter_sku_available_regions(
+    # ── 1. SKU availability filter + vCPU count ──────────────────────────
+    available, vcpu_count = await _filter_sku_available_regions(
         input.vm_size, list(input.candidate_regions)
     )
+
+    # ── 1b. Subscription-wide Spot quota pre-check ────────────────────────
+    # lowPriorityCores is a global limit not reflected in SKU restrictions.
+    # Check it early so we fail fast instead of exhausting all regions.
+    if available:
+        await _check_spot_quota(input.vm_size, vcpu_count, available[0])
 
     prices: dict[str, float] = {}
     scores: dict[str, int] = {}
