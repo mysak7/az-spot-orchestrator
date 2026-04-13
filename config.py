@@ -38,7 +38,7 @@ DEFAULT_MODELS: list[DefaultModel] = [
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # Azure Cosmos DB
     cosmos_endpoint: str = ""

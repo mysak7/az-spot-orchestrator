@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -15,6 +17,18 @@ from api.routes import inventory, models, proxy, storage
 from config import get_settings
 from db.cosmos import seed_default_models, setup_cosmos
 
+logger = logging.getLogger(__name__)
+
+
+async def _warm_inventory_cache() -> None:
+    """Pre-populate the Spot price inventory cache in the background at startup."""
+    try:
+        logger.info("Warming Spot inventory cache…")
+        await inventory.get_spot_inventory(family=None, gpu_only=False, region=None, refresh=True)
+        logger.info("Spot inventory cache ready")
+    except Exception as exc:
+        logger.warning("Spot inventory cache warm-up failed (will retry on first request): %s", exc)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -24,6 +38,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.temporal_client = await Client.connect(
         settings.temporal_host, namespace=settings.temporal_namespace
     )
+    # Warm the inventory cache in the background — don't block startup
+    asyncio.create_task(_warm_inventory_cache())
     yield
 
 

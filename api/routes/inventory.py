@@ -7,13 +7,14 @@ Results are cached in-process for 1 hour to avoid hammering the pricing API.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
 from datetime import UTC, datetime
 
 import httpx
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -63,36 +64,96 @@ def _family(sku: str) -> str:
     return m.group(1).upper() if m else "Other"
 
 
-async def _fetch_raw_spot_prices() -> list[dict]:
-    """Paginate through Azure Retail Prices API and return all Spot VM rows."""
+async def _get_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict | None = None,
+    max_retries: int = 5,
+) -> httpx.Response:
+    """GET with exponential back-off on 429 / 5xx responses."""
+    delay = 2.0
+    for attempt in range(max_retries):
+        resp = await client.get(url, params=params)
+        if resp.status_code == 429:
+            retry_after = float(resp.headers.get("Retry-After", delay))
+            wait = max(retry_after, delay)
+            logger.warning("429 from pricing API (attempt %d/%d) — waiting %.0f s", attempt + 1, max_retries, wait)
+            await asyncio.sleep(wait)
+            delay = min(delay * 2, 60)
+            continue
+        if resp.status_code >= 500:
+            logger.warning("HTTP %s from pricing API (attempt %d/%d)", resp.status_code, attempt + 1, max_retries)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 60)
+            continue
+        resp.raise_for_status()
+        return resp
+    raise httpx.HTTPStatusError(
+        f"Pricing API still returning errors after {max_retries} retries",
+        request=resp.request,  # type: ignore[possibly-undefined]
+        response=resp,  # type: ignore[possibly-undefined]
+    )
+
+
+async def _fetch_page(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict | None = None,
+) -> tuple[list[dict], str | None]:
+    """Fetch one page; return (items, next_url)."""
+    resp = await _get_with_retry(client, url, params=params)
+    data = resp.json()
+    items = [
+        item for item in data.get("Items", [])
+        if item.get("armSkuName") and item.get("armRegionName")
+    ]
+    return items, data.get("NextPageLink") or None
+
+
+async def _fetch_region(client: httpx.AsyncClient, region: str) -> list[dict]:
+    """Fetch all Spot VM price rows for one Azure region."""
     rows: list[dict] = []
-    params: dict[str, str] = {
+    url: str | None = _PRICING_URL
+    params: dict | None = {
         "api-version": "2023-01-01-preview",
         "$filter": (
             "priceType eq 'Consumption'"
+            f" and armRegionName eq '{region}'"
             " and serviceName eq 'Virtual Machines'"
             " and currencyCode eq 'USD'"
+            " and contains(skuName,'Spot')"
         ),
     }
-    url: str | None = _PRICING_URL
+    while url:
+        items, url = await _fetch_page(client, url, params)
+        rows.extend(items)
+        params = None
+    return rows
+
+
+async def _fetch_raw_spot_prices(candidate_regions: list[str]) -> list[dict]:
+    """Fetch Spot VM prices for all candidate regions in parallel.
+
+    Fetching per-region and running concurrently reduces total wall time
+    from ~100 s (global paginate) to ~5-10 s (parallel regional fetches).
+    """
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        page = 0
-        while url:
-            resp = await client.get(url, params=params if page == 0 else {})
-            resp.raise_for_status()
-            data = resp.json()
+        tasks = [_fetch_region(client, r) for r in candidate_regions]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            for item in data.get("Items", []):
-                sku_name: str = item.get("skuName", "")
-                if "Spot" not in sku_name and "Low Priority" not in sku_name:
-                    continue
-                rows.append(item)
+    rows: list[dict] = []
+    for region, result in zip(candidate_regions, results):
+        if isinstance(result, Exception):
+            logger.warning("Failed to fetch prices for %s: %s", region, result)
+        else:
+            rows.extend(result)
 
-            url = data.get("NextPageLink") or None
-            page += 1
-
-    logger.info("Fetched %d Spot VM price rows across %d pages", len(rows), page)
+    logger.info(
+        "Fetched %d Spot VM price rows across %d regions",
+        len(rows),
+        len(candidate_regions),
+    )
     return rows
 
 
@@ -149,16 +210,22 @@ async def get_spot_inventory(
     now = time.monotonic()
     if _cache is None or refresh or (now - _cache[0]) > _CACHE_TTL:
         try:
-            rows = await _fetch_raw_spot_prices()
+            from config import get_settings
+            regions = list(get_settings().azure_candidate_regions)
+            rows = await _fetch_raw_spot_prices(regions)
             payload = _build_inventory(rows)
             _cache = (now, payload)
         except Exception as exc:
             logger.error("Failed to fetch Spot prices: %s", exc)
             if _cache:
-                # Return stale data rather than erroring
+                # Return stale cache rather than erroring
+                logger.warning("Returning stale cache (age=%.0f s)", now - _cache[0])
                 payload = _cache[1]
             else:
-                raise
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Azure Retail Prices API unavailable: {exc}",
+                )
     else:
         payload = _cache[1]
 

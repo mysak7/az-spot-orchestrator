@@ -983,7 +983,17 @@
       document.getElementById('inv-meta').textContent =
         `${data.total} VM sizes · fetched ${fetched}${cached}`;
     } catch (err) {
-      body.innerHTML = `<div class="inv-loading" style="color:var(--red)">Failed to load: ${esc(err.message)}</div>`;
+      const msg = err.message || '';
+      const is503 = msg.includes('503') || msg.includes('unavailable');
+      if (is503 && !_invLoaded) {
+        body.innerHTML = `<div class="inv-loading" style="color:var(--yellow)">
+          Cache is still warming up — retrying in 10 s…<br>
+          <small style="color:var(--muted)">${esc(msg)}</small>
+        </div>`;
+        setTimeout(() => loadInventory(false), 10000);
+      } else {
+        body.innerHTML = `<div class="inv-loading" style="color:var(--red)">Failed to load: ${esc(msg)}</div>`;
+      }
     } finally {
       btn.disabled = false;
     }
