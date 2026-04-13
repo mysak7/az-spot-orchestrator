@@ -27,17 +27,126 @@ logger = logging.getLogger(__name__)
 _PRICING_URL = "https://prices.azure.com/api/retail/prices"
 
 
+async def _filter_sku_available_regions(
+    vm_size: str, candidate_regions: list[str]
+) -> list[str]:
+    """Remove regions where vm_size is quota-restricted or not offered.
+
+    Uses the Azure Resource SKUs API to check subscription-level restrictions.
+    On any API error the original list is returned unchanged.
+    """
+    restricted: set[str] = set()
+    region_lower: dict[str, str] = {r.lower(): r for r in candidate_regions}
+
+    try:
+        async with compute_client() as comp:
+            skus = comp.resource_skus.list(filter=f"name eq '{vm_size}'")
+            async for sku in skus:
+                if sku.name != vm_size or sku.resource_type != "virtualMachines":
+                    continue
+                loc_raw: str = (sku.locations or [None])[0] or ""
+                matched = region_lower.get(loc_raw.lower())
+                if not matched:
+                    continue
+                for restriction in sku.restrictions or []:
+                    reason = getattr(restriction, "reason_code", None)
+                    if reason in ("NotAvailableForSubscription", "QuotaId"):
+                        restricted.add(matched)
+                        logger.info(
+                            "SKU %s restricted in %s (reason: %s) — excluding",
+                            vm_size,
+                            matched,
+                            reason,
+                        )
+                        break
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("SKU availability check failed, using all regions: %s", exc)
+        return candidate_regions
+
+    available = [r for r in candidate_regions if r not in restricted]
+    if restricted:
+        logger.info(
+            "Regions after SKU filter: %s (removed: %s)", available, sorted(restricted)
+        )
+    return available if available else candidate_regions
+
+
+async def _get_spot_placement_scores(
+    vm_size: str, candidate_regions: list[str], http_client: httpx.AsyncClient
+) -> dict[str, int]:
+    """Call the Spot Placement Score API for each region.
+
+    Returns a dict mapping region → score (0–5, higher is better capacity signal).
+    On any error returns an empty dict so the caller falls back to price ordering.
+    """
+    settings = get_settings()
+    scores: dict[str, int] = {}
+
+    # Batch all regions in a single call per the API spec
+    url = (
+        f"https://management.azure.com/subscriptions/{settings.azure_subscription_id}"
+        "/providers/Microsoft.Compute/locations/global/spotPlacementScores"
+        "?api-version=2024-03-01-preview"
+    )
+    body = {
+        "desiredLocations": candidate_regions,
+        "desiredSizes": [{"sku": vm_size}],
+        "desiredCount": 1,
+        "availabilityZones": False,
+    }
+
+    try:
+        from azure.identity.aio import DefaultAzureCredential  # local import to avoid top-level cost
+
+        async with DefaultAzureCredential() as cred:
+            token_obj = await cred.get_token("https://management.azure.com/.default")
+        token = token_obj.token
+
+        resp = await http_client.post(
+            url,
+            json=body,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=20.0,
+        )
+        if resp.status_code == 200:
+            for entry in resp.json().get("placementScores", []):
+                region: str = entry.get("region", "")
+                score: int = entry.get("score", 0)
+                if region in candidate_regions:
+                    scores[region] = score
+            logger.info("Spot placement scores for %s: %s", vm_size, scores)
+        else:
+            logger.warning(
+                "Spot Placement Score API returned %s — falling back to price order",
+                resp.status_code,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Spot placement score check failed: %s", exc)
+
+    return scores
+
+
 @activity.defn
 async def get_cheapest_region(input: GetCheapestRegionInput) -> list[str]:
-    """Query Azure Retail Prices API and return candidate regions ordered cheapest-first.
+    """Return candidate regions ordered by Spot viability.
 
-    Regions with no pricing data (e.g. VM doesn't support Spot) are appended at the
-    end so the caller can still fall back to them.
+    Pipeline:
+      1. Filter out regions where the SKU has quota/subscription restrictions.
+      2. Fetch Spot Placement Scores (capacity signal, 0-5) — skipped on error.
+      3. Fetch Spot prices from the Azure Retail Prices API.
+      4. Sort by: (score desc, price asc); regions without pricing appended last.
+
+    Regions with no data are appended at the end so the caller can still fall
+    back to them.
     """
-    prices: dict[str, float] = {}
+    # ── 1. SKU availability filter ────────────────────────────────────────
+    available = await _filter_sku_available_regions(
+        input.vm_size, list(input.candidate_regions)
+    )
 
-    # Azure Retail Prices API uses priceType='Consumption' for Spot VMs;
-    # Spot prices have "Spot" or "Low Priority" in the skuName.
+    prices: dict[str, float] = {}
+    scores: dict[str, int] = {}
+
     params = {
         "api-version": "2023-01-01-preview",
         "$filter": (
@@ -47,6 +156,10 @@ async def get_cheapest_region(input: GetCheapestRegionInput) -> list[str]:
     }
 
     async with httpx.AsyncClient(timeout=30.0) as client:
+        # ── 2. Spot placement scores (capacity signal) ────────────────────
+        scores = await _get_spot_placement_scores(input.vm_size, available, client)
+
+        # ── 3. Spot prices ────────────────────────────────────────────────
         resp = await client.get(_PRICING_URL, params=params)
         if resp.status_code == 200:
             for item in resp.json().get("Items", []):
@@ -55,7 +168,7 @@ async def get_cheapest_region(input: GetCheapestRegionInput) -> list[str]:
                     continue  # skip on-demand / reservation rows
                 region: str = item.get("armRegionName", "")
                 price: float = item.get("retailPrice", float("inf"))
-                if region in input.candidate_regions:
+                if region in available:
                     if region not in prices or price < prices[region]:
                         prices[region] = price
         else:
@@ -65,17 +178,28 @@ async def get_cheapest_region(input: GetCheapestRegionInput) -> list[str]:
                 input.vm_size,
             )
 
-    # Regions with known prices, sorted cheapest first
-    priced = sorted(prices, key=lambda r: prices[r])
-    for r, p in [(r, prices[r]) for r in priced]:
-        logger.info("Spot price for %s in %s: $%.4f/hr", input.vm_size, r, p)
+    for r, p in prices.items():
+        logger.info(
+            "Spot price for %s in %s: $%.4f/hr (score=%s)",
+            input.vm_size,
+            r,
+            p,
+            scores.get(r, "n/a"),
+        )
 
-    # Append candidate regions without pricing data as fallbacks
-    unpriced = [r for r in input.candidate_regions if r not in prices]
+    # ── 4. Sort: score desc, price asc ───────────────────────────────────
+    priced = sorted(
+        prices,
+        key=lambda r: (-scores.get(r, 0), prices[r]),
+    )
+    unpriced = sorted(
+        [r for r in available if r not in prices],
+        key=lambda r: -scores.get(r, 0),
+    )
     ordered = priced + unpriced
 
     if not ordered:
-        ordered = list(input.candidate_regions)
+        ordered = available or list(input.candidate_regions)
 
     logger.info("Region order for %s: %s", input.vm_size, ordered)
     return ordered
