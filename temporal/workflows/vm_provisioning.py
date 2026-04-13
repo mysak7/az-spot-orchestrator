@@ -299,16 +299,48 @@ class LaunchBareVMWorkflow:
                     start_to_close_timeout=timedelta(minutes=10),
                     retry_policy=_FAST_RETRY,
                 )
+                await workflow.execute_activity(
+                    update_vm_status,
+                    UpdateVMStatusInput(vm_name=input.vm_name, status="terminated"),
+                    start_to_close_timeout=timedelta(minutes=2),
+                )
                 raise ApplicationError(
                     str(cause.message if isinstance(cause, ApplicationError) else exc),
                     non_retryable=True,
                 ) from exc
 
         if not ip_address:
+            await workflow.execute_activity(
+                update_vm_status,
+                UpdateVMStatusInput(vm_name=input.vm_name, status="terminated"),
+                start_to_close_timeout=timedelta(minutes=2),
+            )
             raise ApplicationError(
                 f"No region had Spot capacity for {input.vm_size}. Tried: {regions}",
                 non_retryable=True,
             ) from last_error
+
+        # ── Update DB with region + IP ─────────────────────────────────────
+        await workflow.execute_activity(
+            update_vm_status,
+            UpdateVMStatusInput(
+                vm_name=input.vm_name,
+                status="provisioning",
+                region=region,
+                ip_address=ip_address,
+                workflow_id=workflow.info().workflow_id,
+            ),
+            start_to_close_timeout=timedelta(minutes=2),
+            retry_policy=_FAST_RETRY,
+        )
+
+        # ── Mark running (cloud-init ready callback will also do this) ─────
+        await workflow.execute_activity(
+            update_vm_status,
+            UpdateVMStatusInput(vm_name=input.vm_name, status="running"),
+            start_to_close_timeout=timedelta(minutes=2),
+            retry_policy=_FAST_RETRY,
+        )
 
         return LaunchBareVMResult(
             vm_name=input.vm_name,

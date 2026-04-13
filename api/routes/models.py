@@ -222,10 +222,13 @@ async def notify_vm_evicted(
     except Exception:
         pass  # best-effort; re-provisioning is more important
 
-    # Trigger re-provisioning
+    # Trigger re-provisioning (bare VMs with no model_id are not re-provisioned)
     settings = get_settings()
+    model_id = item.get("model_id")
+    if not model_id:
+        return {"acknowledged": True, "re_provisioning": False}
+
     models_container = get_models_container()
-    model_id = item["model_id"]
     try:
         model_item = await models_container.read_item(item=model_id, partition_key=model_id)
     except ResourceNotFoundError:

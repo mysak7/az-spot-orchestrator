@@ -415,18 +415,33 @@ class LaunchBareVMRequest(BaseModel):
 async def launch_bare_vm(body: LaunchBareVMRequest, request: FastAPIRequest) -> dict:
     """Start a bare Spot VM (SSH only, no model) via Temporal.
 
-    Returns immediately with the workflow_id and vm_name.
-    Poll GET /api/inventory/bare-vms/{workflow_id} for IP + status.
+    Creates a pending VMInstance record (model_id/model_name blank) immediately
+    so the VM appears in the instances table. The workflow updates it with
+    region + IP as it progresses.
     """
     from config import get_settings
+    from db.cosmos import get_instances_container
+    from db.models import VMInstance, VMStatus
     from temporal.types import LaunchBareVMInput
     from temporal.workflows.vm_provisioning import LaunchBareVMWorkflow
 
     settings = get_settings()
     short_id = uuid.uuid4().hex[:8]
     vm_name = f"bare-{short_id}"
+    workflow_id = f"bare-vm-{short_id}"
 
     temporal_client = request.app.state.temporal_client
+
+    # Create pending instance record with blank model fields
+    instance = VMInstance(
+        id=vm_name,
+        vm_name=vm_name,
+        resource_group=settings.azure_resource_group,
+        status=VMStatus.pending,
+        workflow_id=workflow_id,
+    )
+    instances_container = get_instances_container()
+    await instances_container.create_item(body=instance.model_dump())
 
     handle = await temporal_client.start_workflow(
         LaunchBareVMWorkflow.run,
@@ -436,7 +451,7 @@ async def launch_bare_vm(body: LaunchBareVMRequest, request: FastAPIRequest) -> 
             vm_size=body.vm_size,
             region=body.region,
         ),
-        id=f"bare-vm-{short_id}",
+        id=workflow_id,
         task_queue=settings.temporal_task_queue,
     )
 

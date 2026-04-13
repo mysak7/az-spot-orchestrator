@@ -42,8 +42,8 @@ class LLMModel(BaseModel):
 class VMInstance(BaseModel):
     # `id` = vm_name so update_vm_status can do a direct point-read (no cross-partition needed)
     id: str  # = vm_name
-    model_id: str
-    model_name: str  # denormalised — avoids a join when proxying requests
+    model_id: str | None = None
+    model_name: str | None = None  # denormalised — avoids a join when proxying requests
     vm_name: str  # = id
     resource_group: str
     region: str | None = None

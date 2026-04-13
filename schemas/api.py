@@ -39,8 +39,8 @@ class LLMModelResponse(BaseModel):
 
 class VMInstanceResponse(BaseModel):
     id: str
-    model_id: str
-    model_name: str
+    model_id: str | None
+    model_name: str | None
     vm_name: str
     resource_group: str
     region: str | None
