@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 
-from azure.cosmos import PartitionKey
 from azure.cosmos.aio import ContainerProxy, CosmosClient
 from azure.identity.aio import DefaultAzureCredential
 
@@ -20,9 +19,9 @@ from db.models import LLMModel
 logger = logging.getLogger(__name__)
 
 _DB_NAME = "az-spot-orchestrator"
-MODELS_CONTAINER = "llm_models"
-INSTANCES_CONTAINER = "vm_instances"
-MODEL_CACHE_CONTAINER = "model_cache"
+MODELS_CONTAINER = "llm-models"
+INSTANCES_CONTAINER = "vm-instances"
+MODEL_CACHE_CONTAINER = "model-cache"
 
 _client: CosmosClient | None = None
 
@@ -48,14 +47,15 @@ def get_cache_container() -> ContainerProxy:
 
 
 async def setup_cosmos() -> None:
-    """Idempotently create the Cosmos DB database and containers."""
+    """Verify Cosmos DB connectivity.
+
+    Schema (database + containers) is managed by Terraform, not the app.
+    This just confirms the connection and AAD auth work at startup.
+    """
     client = _get_client()
-    db = await client.create_database_if_not_exists(id=_DB_NAME)
-    for container_id in (MODELS_CONTAINER, INSTANCES_CONTAINER, MODEL_CACHE_CONTAINER):
-        await db.create_container_if_not_exists(
-            id=container_id,
-            partition_key=PartitionKey(path="/id"),
-        )
+    # readMetadata is sufficient to confirm auth and connectivity.
+    async for _ in client.list_databases():
+        break
 
 
 async def seed_default_models() -> None:
