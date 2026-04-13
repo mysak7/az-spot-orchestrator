@@ -606,6 +606,13 @@
         </svg>
         <h2>VM Instances</h2>
       </div>
+
+      <!-- Active provisioning jobs -->
+      <div class="jobs-panel" id="jobs-panel" style="display:none">
+        <h3>Active VM Jobs</h3>
+        <div id="jobs-list"></div>
+      </div>
+
       <div class="card">
         <table>
           <thead>
@@ -742,11 +749,6 @@
         <div class="inv-loading">Select "Spot Inventory" to load prices from the Azure Retail API…</div>
       </div>
 
-      <!-- Active bare VM jobs -->
-      <div class="jobs-panel" id="jobs-panel" style="display:none">
-        <h3>Active VM Jobs</h3>
-        <div id="jobs-list"></div>
-      </div>
     </div>
 
   </main>
@@ -994,9 +996,18 @@
   async function provisionModel(id, name) {
     if (!confirm(`Provision a new Spot VM for model "${name}"?`)) return;
     try {
+      const model = _models.find(m => m.id === id);
       const res = await apiFetch(`/api/models/${id}/provision`, { method: 'POST', body: '{}' });
       toast(`Provisioning started: ${res.vm_name}`, 'success');
       navigate('vms');
+      _trackJob({
+        workflow_id: res.workflow_id,
+        vm_name: res.vm_name,
+        vm_size: model?.vm_size || '—',
+        region: null,
+        status: 'provisioning',
+        model_name: name,
+      });
       refresh();
     } catch (err) {
       toast(`Provision failed: ${err.message}`, 'error');
@@ -1332,6 +1343,9 @@
 
     list.innerHTML = jobs.map(j => {
       if (j.status === 'running') {
+        const accessLine = j.model_name
+          ? `<a class="ssh-cmd" href="http://${esc(j.ip_address)}:11434" target="_blank" style="text-decoration:none;display:block">http://${esc(j.ip_address)}:11434 — ${esc(j.model_name)} ready</a>`
+          : `<code class="ssh-cmd" title="Click to copy" onclick="navigator.clipboard.writeText(this.textContent.trim());toast('Copied!','success')">ssh azureuser@${esc(j.ip_address)}</code>`;
         return `<div class="job-card">
           <div class="job-card-header">
             <span style="color:var(--green);font-size:16px">●</span>
@@ -1340,7 +1354,7 @@
             <span class="job-detail">IP: <strong style="color:var(--text)">${esc(j.ip_address)}</strong></span>
             <button class="btn btn-danger" style="font-size:12px;padding:3px 8px;margin-left:auto" onclick="dismissJob('${esc(j.workflow_id)}')">Dismiss</button>
           </div>
-          <code class="ssh-cmd" title="Click to copy" onclick="navigator.clipboard.writeText(this.textContent.trim());toast('Copied!','success')">ssh azureuser@${esc(j.ip_address)}</code>
+          ${accessLine}
           ${_renderJobLog(j.logs)}
         </div>`;
       }
