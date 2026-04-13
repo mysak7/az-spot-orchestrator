@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from azure.identity.aio import DefaultAzureCredential
-from azure.storage.blob import BlobSasPermissions, generate_blob_sas
+from azure.storage.blob import BlobSasPermissions, UserDelegationKey, generate_blob_sas
 from azure.storage.blob.aio import BlobServiceClient
 
 from config import get_settings
@@ -23,7 +23,7 @@ from db.models import ModelCacheEntry
 logger = logging.getLogger(__name__)
 
 # User-delegation key cache — refreshed hourly (keys are valid up to 7 days).
-_delegation_key: object | None = None
+_delegation_key: UserDelegationKey | None = None
 _delegation_key_expiry: datetime | None = None
 
 
@@ -188,7 +188,9 @@ async def get_best_source(
             nearest_entry = next(e for e in items if e.region == nearest)
             try:
                 download_url = await _generate_sas_url(nearest_entry.blob_name, "read")
-                upload_url = await _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
+                upload_url = await _generate_sas_url(
+                    _blob_name(model_identifier, vm_region), "write"
+                )
                 logger.info(
                     "Model %s not in %s, found in nearest region %s (distance=%.1f)",
                     model_identifier,
