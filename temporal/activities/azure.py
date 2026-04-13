@@ -102,7 +102,7 @@ async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str) -> None:
         async with compute_client() as comp:
             usages = comp.usage.list(location=region)
             async for usage in usages:
-                if getattr(usage.name, "value", None) == "LowPriorityCores":
+                if (getattr(usage.name, "value", None) or "").lower() == "lowprioritycores":
                     limit: int = usage.limit or 0
                     current: int = usage.current_value or 0
                     remaining = limit - current

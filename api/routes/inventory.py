@@ -217,7 +217,7 @@ async def _fetch_spot_quota_remaining(region: str) -> int:
     try:
         async with compute_client() as comp:
             async for usage in comp.usage.list(location=region):
-                if getattr(usage.name, "value", None) == "LowPriorityCores":
+                if (getattr(usage.name, "value", None) or "").lower() == "lowprioritycores":
                     limit: int = usage.limit or 0
                     current: int = usage.current_value or 0
                     remaining = limit - current
