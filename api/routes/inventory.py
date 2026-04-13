@@ -401,9 +401,45 @@ async def launch_bare_vm(body: LaunchBareVMRequest, request: FastAPIRequest) -> 
     }
 
 
+_ACTIVITY_LABELS: dict[str, str] = {
+    "get_cheapest_region": "Finding cheapest region...",
+    "provision_azure_vm":  "Provisioning VM on Azure...",
+    "delete_azure_vm":     "Cleaning up, trying next region...",
+    "update_vm_status":    "Updating status...",
+    "wait_for_model_ready": "Waiting for model to load...",
+}
+
+
+def _activity_info(pending: list) -> dict | None:
+    """Extract current activity details from Temporal pending_activities list."""
+    if not pending:
+        return None
+    act = pending[0]
+    name: str = getattr(getattr(act, "activity_type", None), "name", "") or ""
+    attempt: int = getattr(act, "attempt", 1)
+    state_val = getattr(act, "state", None)
+    state_str = state_val.name if state_val is not None else "UNKNOWN"
+
+    last_failure_msg: str | None = None
+    lf = getattr(act, "last_failure", None)
+    if lf:
+        last_failure_msg = getattr(lf, "message", None) or str(lf)
+
+    return {
+        "name": name,
+        "display": _ACTIVITY_LABELS.get(name, name.replace("_", " ").title() + "..."),
+        "attempt": attempt,
+        "state": state_str,
+        "last_failure": last_failure_msg,
+    }
+
+
 @router.get("/inventory/bare-vms/{workflow_id}")
 async def get_bare_vm_status(workflow_id: str, request: FastAPIRequest) -> dict:
-    """Poll the status of a bare VM launch workflow."""
+    """Poll status of a bare VM launch workflow.
+
+    Returns structured activity info so the frontend can show a live log.
+    """
     from temporalio.client import WorkflowExecutionStatus
     from temporalio.service import RPCError
 
@@ -412,9 +448,9 @@ async def get_bare_vm_status(workflow_id: str, request: FastAPIRequest) -> dict:
     try:
         handle = temporal_client.get_workflow_handle(workflow_id)
         desc = await handle.describe()
-        status = desc.status
+        wf_status = desc.status
 
-        if status == WorkflowExecutionStatus.COMPLETED:
+        if wf_status == WorkflowExecutionStatus.COMPLETED:
             result = await handle.result()
             return {
                 "workflow_id": workflow_id,
@@ -422,15 +458,35 @@ async def get_bare_vm_status(workflow_id: str, request: FastAPIRequest) -> dict:
                 "vm_name": result.vm_name,
                 "ip_address": result.ip_address,
                 "region": result.region,
+                "current_activity": None,
             }
-        elif status == WorkflowExecutionStatus.FAILED:
-            return {"workflow_id": workflow_id, "status": "failed", "error": "Workflow failed"}
-        elif status == WorkflowExecutionStatus.CANCELED:
-            return {"workflow_id": workflow_id, "status": "cancelled"}
-        else:
-            return {"workflow_id": workflow_id, "status": "provisioning"}
+
+        if wf_status == WorkflowExecutionStatus.FAILED:
+            # Extract the real failure message from the workflow
+            error_msg = "Workflow failed"
+            try:
+                await handle.result()
+            except WorkflowFailureError as wfe:
+                cause = wfe.__cause__
+                error_msg = getattr(cause, "message", None) or str(wfe)
+            except Exception as exc:
+                error_msg = str(exc)
+            return {
+                "workflow_id": workflow_id,
+                "status": "failed",
+                "error": error_msg,
+                "current_activity": None,
+            }
+
+        if wf_status == WorkflowExecutionStatus.CANCELED:
+            return {"workflow_id": workflow_id, "status": "cancelled", "current_activity": None}
+
+        # Still running — expose current activity
+        return {
+            "workflow_id": workflow_id,
+            "status": "provisioning",
+            "current_activity": _activity_info(desc.pending_activities or []),
+        }
 
     except RPCError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except WorkflowFailureError as exc:
-        return {"workflow_id": workflow_id, "status": "failed", "error": str(exc)}
