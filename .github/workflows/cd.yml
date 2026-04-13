@@ -111,6 +111,10 @@ jobs:
               echo '${ENV_CONTENT}' | base64 -d > .env
               echo '${{ secrets.GITHUB_TOKEN }}' \
                 | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+              # Ensure Temporal is running (it uses a local image, not GHCR)
+              docker compose up -d --no-deps temporal
+              # Fix volume permissions so Temporal can write its SQLite DB
+              chmod 777 /var/lib/docker/volumes/az-spot-orchestrator_temporal_data/_data 2>/dev/null || true
               docker compose pull api worker
               docker compose up -d --no-deps api worker
               docker image prune -f
