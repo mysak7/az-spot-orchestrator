@@ -711,17 +711,31 @@
         <div id="jobs-list"></div>
       </div>
 
+      <div class="filter-bar">
+        <input type="text" id="inst-search" placeholder="Search VM name or model…" oninput="filterInstances()">
+        <select id="inst-status-filter" onchange="filterInstances()">
+          <option value="">All statuses</option>
+          <option value="running" selected>Running</option>
+          <option value="provisioning">Provisioning</option>
+          <option value="downloading">Downloading</option>
+          <option value="pending">Pending</option>
+          <option value="evicted">Evicted</option>
+          <option value="terminated">Terminated</option>
+          <option value="failed">Failed</option>
+        </select>
+      </div>
+
       <div class="card">
         <table>
           <thead>
             <tr>
-              <th>VM Name</th>
-              <th>Model</th>
-              <th>Status</th>
-              <th>Region</th>
+              <th class="sortable" onclick="sortInstances('vm_name')">VM Name</th>
+              <th class="sortable" onclick="sortInstances('model_name')">Model</th>
+              <th class="sortable" onclick="sortInstances('status')">Status</th>
+              <th class="sortable" onclick="sortInstances('region')">Region</th>
               <th>IP Address</th>
               <th>Workflow</th>
-              <th>Last Updated</th>
+              <th class="sortable" onclick="sortInstances('updated_at')">Last Updated</th>
             </tr>
           </thead>
           <tbody id="instances-tbody">
@@ -999,16 +1013,66 @@
   }
 
   // ── Render VM Instances ────────────────────────────────────────────────────
-  function renderInstances(instances) {
-    const tbody = document.getElementById('instances-tbody');
-    document.getElementById('nav-vms-count').textContent = instances.length;
+  let _instancesAll = [];
+  let _instSortCol = 'updated_at';
+  let _instSortDir = -1; // -1=desc (newest first)
 
-    if (!instances.length) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">No VM instances yet — provision a model to get started</td></tr>';
+  function renderInstances(instances) {
+    _instancesAll = instances;
+    document.getElementById('nav-vms-count').textContent = instances.length;
+    _applyInstanceFilters();
+  }
+
+  function sortInstances(col) {
+    if (_instSortCol === col) {
+      _instSortDir *= -1;
+    } else {
+      _instSortCol = col;
+      _instSortDir = col === 'updated_at' ? -1 : 1;
+    }
+    _applyInstanceFilters();
+  }
+
+  function filterInstances() {
+    _applyInstanceFilters();
+  }
+
+  function _applyInstanceFilters() {
+    const tbody = document.getElementById('instances-tbody');
+    const search = document.getElementById('inst-search').value.toLowerCase();
+    const statusFilter = document.getElementById('inst-status-filter').value;
+
+    // Update sortable header classes
+    document.querySelectorAll('#page-vms th.sortable').forEach(th => {
+      th.classList.remove('sort-asc', 'sort-desc');
+      if (th.getAttribute('onclick') === `sortInstances('${_instSortCol}')`) {
+        th.classList.add(_instSortDir === 1 ? 'sort-asc' : 'sort-desc');
+      }
+    });
+
+    let items = _instancesAll.slice();
+
+    if (statusFilter) items = items.filter(i => i.status === statusFilter);
+    if (search) items = items.filter(i =>
+      (i.vm_name || '').toLowerCase().includes(search) ||
+      (i.model_name || '').toLowerCase().includes(search)
+    );
+
+    const col = _instSortCol, dir = _instSortDir;
+    items.sort((a, b) => {
+      const va = a[col] ?? '', vb = b[col] ?? '';
+      return va < vb ? -dir : va > vb ? dir : 0;
+    });
+
+    if (!items.length) {
+      const msg = _instancesAll.length
+        ? 'No instances match the current filters'
+        : 'No VM instances yet — provision a model to get started';
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="7">${msg}</td></tr>`;
       return;
     }
 
-    tbody.innerHTML = instances.map(i => `
+    tbody.innerHTML = items.map(i => `
       <tr>
         <td class="mono">${esc(i.vm_name)}</td>
         <td><strong>${esc(i.model_name)}</strong></td>
