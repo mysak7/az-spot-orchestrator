@@ -448,8 +448,8 @@
   }
 
   .region-grid {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
     gap: 6px;
   }
 
@@ -457,20 +457,20 @@
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 12px 14px;
+    padding: 9px 12px;
     transition: border-color 0.15s;
   }
 
   .region-card label {
     display: flex;
-    align-items: flex-start;
-    gap: 9px;
+    align-items: center;
+    gap: 8px;
     cursor: pointer;
     width: 100%;
   }
 
   .region-card input[type=checkbox] {
-    margin-top: 2px;
+    width: auto;
     flex-shrink: 0;
     cursor: pointer;
   }
@@ -486,13 +486,16 @@
     font-weight: 600;
     font-family: ui-monospace, monospace;
     color: var(--text);
+    flex-shrink: 0;
   }
 
   .rc-meta {
-    margin-top: 3px;
     font-size: 11px;
     color: var(--muted);
-    line-height: 1.5;
+    margin-left: auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   /* ── Sortable headers ── */
@@ -1097,10 +1100,8 @@
           <div class="region-card">
             <label>
               <input type="checkbox" ${disabled} onchange="toggleCacheRegion('${esc(region)}', this.checked)">
-              <div>
-                <div class="rc-name">${esc(region)}</div>
-                <div class="rc-meta">not cached</div>
-              </div>
+              <span class="rc-name">${esc(region)}</span>
+              <span class="rc-meta">not cached</span>
             </label>
           </div>`;
       }
@@ -1115,10 +1116,8 @@
         <div class="region-card ${cls}">
           <label>
             <input type="checkbox" ${isBusy ? 'disabled' : ''} checked onchange="toggleCacheRegion('${esc(region)}', this.checked)">
-            <div>
-              <div class="rc-name">${esc(region)}</div>
-              <div class="rc-meta">${esc(meta)}</div>
-            </div>
+            <span class="rc-name">${esc(region)}</span>
+            <span class="rc-meta">${esc(meta)}</span>
           </label>
         </div>`;
     }).join('');
