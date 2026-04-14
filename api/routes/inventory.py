@@ -204,32 +204,6 @@ async def _fetch_subscription_available(
     return available, vcpu_counts
 
 
-async def _fetch_spot_quota_remaining(region: str) -> int:
-    """Return remaining lowPriorityCores Spot quota for this subscription.
-
-    lowPriorityCores is subscription-wide — the same limit applies in every region,
-    so any one region's usage report is authoritative.  Returns a large sentinel
-    (999999) on any error so the caller skips the filter rather than hiding VMs.
-    """
-    from services.azure_client import compute_client
-
-    _SENTINEL = 999999
-    try:
-        async with compute_client() as comp:
-            async for usage in comp.usage.list(location=region):
-                if (getattr(usage.name, "value", None) or "").lower() == "lowprioritycores":
-                    limit: int = usage.limit or 0
-                    current: int = usage.current_value or 0
-                    remaining = limit - current
-                    logger.info(
-                        "Spot quota (lowPriorityCores): limit=%d used=%d remaining=%d",
-                        limit, current, remaining,
-                    )
-                    return remaining
-        logger.warning("LowPriorityCores usage not found in %s — skipping quota filter", region)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Spot quota fetch failed — skipping quota filter: %s", exc)
-    return _SENTINEL
 
 
 async def _fetch_raw_spot_prices(candidate_regions: list[str]) -> list[dict]:
@@ -262,20 +236,18 @@ def _build_inventory(
     rows: list[dict],
     available_skus: dict[str, set[str]],
     vcpu_counts: dict[str, int],
-    spot_quota_remaining: int,
 ) -> dict:
     """Build the inventory dict from raw price rows.
 
     available_skus: {region → set_of_vm_size_lower} from the Resource SKUs API.
     vcpu_counts: {vm_size_lower → vCPU count} from SKU capabilities.
-    spot_quota_remaining: remaining lowPriorityCores quota (subscription-wide).
-      Pass 999999 when unknown so the filter is effectively skipped.
 
-    Both the SKU filter and the quota filter are skipped when their inputs are
-    unavailable, so the page still shows something useful on API errors.
+    The SKU filter is skipped when unavailable so the page still shows
+    something useful on API errors. Spot quota is NOT filtered here —
+    lowPriorityCores is per-region, so the provisioning activity checks it
+    per-region at provision time.
     """
     skip_sku_filter = not available_skus
-    skip_quota_filter = spot_quota_remaining >= 999999
 
     # vm_size → region → best_price
     pricing: dict[str, dict[str, float]] = {}
@@ -293,12 +265,6 @@ def _build_inventory(
         if not skip_sku_filter:
             region_set = available_skus.get(region, set())
             if vm_size_lower not in region_set:
-                continue
-
-        # Drop VM sizes that exceed the subscription-wide Spot vCPU quota
-        if not skip_quota_filter:
-            vcpus = vcpu_counts.get(vm_size_lower, 0)
-            if vcpus > spot_quota_remaining:
                 continue
 
         bucket = pricing.setdefault(vm_size, {})
@@ -347,13 +313,12 @@ async def get_spot_inventory(
         try:
             from config import get_settings
             regions = list(get_settings().azure_candidate_regions)
-            # Fetch prices, SKU availability, and Spot quota in parallel
-            rows, (available_skus, vcpu_counts), spot_quota_remaining = await asyncio.gather(
+            # Fetch prices and SKU availability in parallel
+            rows, (available_skus, vcpu_counts) = await asyncio.gather(
                 _fetch_raw_spot_prices(regions),
                 _fetch_subscription_available(regions),
-                _fetch_spot_quota_remaining(regions[0]),
             )
-            payload = _build_inventory(rows, available_skus, vcpu_counts, spot_quota_remaining)
+            payload = _build_inventory(rows, available_skus, vcpu_counts)
             _cache = (now, payload)
         except Exception as exc:
             logger.error("Failed to fetch Spot prices: %s", exc)

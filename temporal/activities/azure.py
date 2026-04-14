@@ -94,19 +94,18 @@ async def _filter_sku_available_regions(
     return (available if available else candidate_regions), vcpu_count
 
 
-async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str) -> None:
-    """Raise InsufficientSpotQuota if the subscription cannot fit vcpu_count Spot cores.
+async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str) -> bool:
+    """Return True if this region has enough Spot quota for vcpu_count cores.
 
-    lowPriorityCores is a subscription-wide limit — Azure does not reflect it in
-    per-region SKU restrictions, so it is invisible to _filter_sku_available_regions.
-    Checking it here prevents the workflow from cycling through every candidate region
-    only to get OperationNotAllowed on each.
+    lowPriorityCores quota is per-region (per subscription per region) — checking
+    it here lets get_cheapest_region filter out regions with insufficient headroom
+    rather than aborting the entire workflow on the first exhausted region.
 
-    On any API error the check is skipped (fail open).
+    Returns True on any API error so the caller doesn't skip potentially valid regions.
     """
     if vcpu_count == 0:
-        logger.warning("vCPU count unknown for %s — skipping Spot quota pre-check", vm_size)
-        return
+        logger.warning("vCPU count unknown for %s — skipping Spot quota check for %s", vm_size, region)
+        return True
 
     try:
         async with compute_client() as comp:
@@ -117,27 +116,18 @@ async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str) -> None:
                     current: int = usage.current_value or 0
                     remaining = limit - current
                     logger.info(
-                        "Spot quota (lowPriorityCores): limit=%d used=%d remaining=%d, need=%d",
+                        "Spot quota in %s (lowPriorityCores): limit=%d used=%d remaining=%d, need=%d",
+                        region,
                         limit,
                         current,
                         remaining,
                         vcpu_count,
                     )
-                    if vcpu_count > remaining:
-                        raise ApplicationError(
-                            f"Insufficient Spot quota: {vm_size} needs {vcpu_count} vCPUs "
-                            f"but only {remaining} lowPriorityCores remain "
-                            f"(limit={limit}, used={current}). "
-                            "Request a quota increase at aka.ms/AzurePortalQuota.",
-                            type="InsufficientSpotQuota",
-                            non_retryable=True,
-                        )
-                    return
+                    return vcpu_count <= remaining
         logger.warning("LowPriorityCores usage not found in region %s — skipping quota check", region)
-    except ApplicationError:
-        raise
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Spot quota pre-check failed, proceeding anyway: %s", exc)
+        logger.warning("Spot quota check failed for %s, proceeding anyway: %s", region, exc)
+    return True  # fail open
 
 
 async def _get_spot_placement_scores(
@@ -213,11 +203,25 @@ async def get_cheapest_region(input: GetCheapestRegionInput) -> list[str]:
         input.vm_size, list(input.candidate_regions)
     )
 
-    # ── 1b. Subscription-wide Spot quota pre-check ────────────────────────
-    # lowPriorityCores is a global limit not reflected in SKU restrictions.
-    # Check it early so we fail fast instead of exhausting all regions.
-    if available:
-        await _check_spot_quota(input.vm_size, vcpu_count, available[0])
+    # ── 1b. Per-region Spot quota filter ─────────────────────────────────
+    # lowPriorityCores quota is per-region — check each region individually
+    # and exclude those without enough headroom. Only fail if every region
+    # is exhausted (quota is 3/region, so other regions may still have room).
+    if vcpu_count > 0 and available:
+        quota_ok = []
+        for r in available:
+            if await _check_spot_quota(input.vm_size, vcpu_count, r):
+                quota_ok.append(r)
+            else:
+                logger.info("Region %s excluded: insufficient Spot quota for %s (%d vCPUs)", r, input.vm_size, vcpu_count)
+        if not quota_ok:
+            raise ApplicationError(
+                f"No region has sufficient Spot quota for {input.vm_size} ({vcpu_count} vCPUs). "
+                "Request a quota increase at aka.ms/AzurePortalQuota.",
+                type="InsufficientSpotQuota",
+                non_retryable=True,
+            )
+        available = quota_ok
 
     prices: dict[str, float] = {}
     scores: dict[str, int] = {}
