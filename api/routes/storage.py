@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import logging
+import uuid
 
 from fastapi import APIRouter, HTTPException
 
+from api.deps import TemporalClient
+from config import get_settings
 from schemas.api import (
     CacheCompleteRequest,
     CacheFailedRequest,
     CacheProgressRequest,
     CacheSourceResponse,
+    CopyBlobRequest,
     DownloadLogRequest,
     ModelCacheEntryResponse,
 )
 from services.model_cache import (
+    delete_cache_entry,
     get_best_source,
     list_cache_entries,
     mark_upload_failed,
@@ -22,6 +27,8 @@ from services.model_cache import (
     update_download_stats,
     update_upload_phase,
 )
+from temporal.types import CopyBlobInput
+from temporal.workflows.blob_copy import CopyBlobWorkflow
 
 logger = logging.getLogger(__name__)
 
@@ -117,4 +124,47 @@ async def log_cache_download(req: DownloadLogRequest) -> dict:
         }
     except Exception as e:
         logger.error("Failed to log cache download: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/storage/regions", response_model=list[str])
+async def list_regions() -> list[str]:
+    """Return the candidate Azure regions used for Spot VM provisioning."""
+    return get_settings().azure_candidate_regions
+
+
+@router.post("/storage/cache/copy", status_code=202)
+async def copy_blob(req: CopyBlobRequest, temporal: TemporalClient) -> dict:
+    """Start a CopyBlobWorkflow to replicate a cached model to a new region.
+
+    Uses Azure server-side copy from the nearest available source — no data
+    leaves Azure's backbone.
+    """
+    s = get_settings()
+    safe_id = req.model_identifier.replace(":", "-").replace(".", "-")
+    workflow_id = f"copy-{safe_id}-to-{req.target_region}-{uuid.uuid4().hex[:8]}"
+    try:
+        await temporal.start_workflow(
+            CopyBlobWorkflow.run,
+            CopyBlobInput(
+                model_identifier=req.model_identifier,
+                target_region=req.target_region,
+            ),
+            id=workflow_id,
+            task_queue=s.temporal_task_queue,
+        )
+    except Exception as e:
+        logger.error("Failed to start CopyBlobWorkflow: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return {"status": "accepted", "workflow_id": workflow_id}
+
+
+@router.delete("/storage/cache/entry")
+async def delete_blob_entry(model_identifier: str, region: str) -> dict:
+    """Delete a cached model blob from Azure Storage and remove its DB entry."""
+    try:
+        await delete_cache_entry(model_identifier, region)
+        return {"status": "deleted", "model_identifier": model_identifier, "region": region}
+    except Exception as e:
+        logger.error("Failed to delete cache entry: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e

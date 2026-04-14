@@ -76,3 +76,18 @@ class LaunchBareVMResult:
     vm_name: str
     region: str
     ip_address: str
+
+
+@dataclass
+class CopyBlobInput:
+    model_identifier: str
+    target_region: str
+
+
+@dataclass
+class CopyBlobResult:
+    model_identifier: str
+    source_region: str
+    target_region: str
+    size_bytes: int
+    duration_seconds: float

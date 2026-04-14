@@ -135,3 +135,10 @@ class CacheFailedRequest(BaseModel):
 
     model_identifier: str
     region: str
+
+
+class CopyBlobRequest(BaseModel):
+    """Request body for POST /api/storage/cache/copy — trigger server-side blob replication."""
+
+    model_identifier: str
+    target_region: str

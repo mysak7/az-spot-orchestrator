@@ -350,6 +350,77 @@ async def mark_upload_failed(model_identifier: str, region: str) -> None:
         logger.warning("Failed to mark upload failed for %s in %s: %s", model_identifier, region, e)
 
 
+async def get_blob_read_url(model_identifier: str, region: str) -> str:
+    """Generate a read SAS URL for a cached blob in the given region."""
+    blob = _blob_name(model_identifier, region)
+    return await _generate_sas_url(blob, "read", expiry_hours=4)
+
+
+async def find_best_copy_source(model_identifier: str, target_region: str) -> str | None:
+    """Return the nearest available region to copy a model blob from, or None."""
+    container = get_cache_container()
+    query = "SELECT * FROM c WHERE c.model_identifier = @model_id AND c.status = @status"
+    items: list[ModelCacheEntry] = []
+    async for item in container.query_items(
+        query=query,
+        parameters=[
+            {"name": "@model_id", "value": model_identifier},
+            {"name": "@status", "value": "available"},
+        ],
+    ):
+        items.append(ModelCacheEntry(**item))
+
+    available_regions = [e.region for e in items if e.region != target_region]
+    if not available_regions:
+        return None
+    return _nearest_region(target_region, available_regions)
+
+
+async def mark_copy_started(model_identifier: str, target_region: str) -> None:
+    """Create a placeholder cache entry with status='uploading' and phase='copying'."""
+    container = get_cache_container()
+    now = datetime.now(UTC).isoformat()
+    entry = ModelCacheEntry(
+        id=f"{_sanitize_identifier(model_identifier)}-{target_region}",
+        model_identifier=model_identifier,
+        region=target_region,
+        blob_name=_blob_name(model_identifier, target_region),
+        status="uploading",
+        current_phase="copying",
+        upload_started_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    await container.upsert_item(entry.model_dump())
+    logger.info("Marked copy started for %s → %s", model_identifier, target_region)
+
+
+async def delete_cache_entry(model_identifier: str, region: str) -> None:
+    """Delete cache entry from Cosmos DB and delete the blob from Azure Storage."""
+    from services.blob_client import blob_service_client
+
+    s = get_settings()
+    entry_id = f"{_sanitize_identifier(model_identifier)}-{region}"
+    blob = _blob_name(model_identifier, region)
+
+    container = get_cache_container()
+    try:
+        await container.delete_item(entry_id, partition_key=entry_id)
+        logger.info("Deleted Cosmos cache entry %s", entry_id)
+    except Exception as e:
+        logger.warning("Could not delete Cosmos entry %s: %s", entry_id, e)
+
+    try:
+        async with blob_service_client() as client:
+            bc = client.get_blob_client(
+                container=s.azure_storage_container_name, blob=blob
+            )
+            await bc.delete_blob()
+            logger.info("Deleted blob %s", blob)
+    except Exception as e:
+        logger.warning("Could not delete blob %s: %s", blob, e)
+
+
 async def list_cache_entries() -> list[ModelCacheEntry]:
     """List all cached models with their metadata."""
     container = get_cache_container()
