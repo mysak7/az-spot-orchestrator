@@ -42,6 +42,13 @@ DEFAULT_MODELS: list[DefaultModel] = [
         description="Qwen 3.5 0.8B – ultra-lightweight CPU model",
     ),
     DefaultModel(
+        name="qwen35-9b",
+        model_identifier="qwen3.5:9b",
+        size_mb=5500,
+        vm_size="Standard_NC4as_T4_v3",  # T4 16 GB VRAM — fits Q4_K_M ~5.5 GB
+        description="Qwen 3.5 9B – general-purpose mid-size model, fits on a single T4",
+    ),
+    DefaultModel(
         name="qwen3-32b",
         model_identifier="qwen3:32b",
         size_mb=20000,
