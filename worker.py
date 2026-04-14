@@ -17,7 +17,9 @@ from temporal.activities.azure import (
 )
 from temporal.activities.blob import copy_blob_to_region
 from temporal.activities.database import update_vm_status
+from temporal.activities.seed_blob import seed_blob_from_registry
 from temporal.workflows.blob_copy import CopyBlobWorkflow
+from temporal.workflows.seed_blob import SeedBlobWorkflow
 from temporal.workflows.vm_provisioning import DeleteVMWorkflow, LaunchBareVMWorkflow, ProvisionVMWorkflow
 
 logging.basicConfig(
@@ -34,7 +36,7 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=settings.temporal_task_queue,
-        workflows=[ProvisionVMWorkflow, DeleteVMWorkflow, LaunchBareVMWorkflow, CopyBlobWorkflow],
+        workflows=[ProvisionVMWorkflow, DeleteVMWorkflow, LaunchBareVMWorkflow, CopyBlobWorkflow, SeedBlobWorkflow],
         activities=[
             get_cheapest_region,
             provision_azure_vm,
@@ -42,6 +44,7 @@ async def main() -> None:
             delete_azure_vm,
             update_vm_status,
             copy_blob_to_region,
+            seed_blob_from_registry,
         ],
     )
 

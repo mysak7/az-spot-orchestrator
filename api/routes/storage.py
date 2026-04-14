@@ -28,11 +28,9 @@ from services.model_cache import (
     update_download_stats,
     update_upload_phase,
 )
-from db.cosmos import get_models_container
-from db.models import VMInstance, VMStatus
-from temporal.types import CopyBlobInput, ProvisionVMInput
+from temporal.types import CopyBlobInput, SeedBlobInput
 from temporal.workflows.blob_copy import CopyBlobWorkflow
-from temporal.workflows.vm_provisioning import ProvisionVMWorkflow
+from temporal.workflows.seed_blob import SeedBlobWorkflow
 
 logger = logging.getLogger(__name__)
 
@@ -176,74 +174,36 @@ async def copy_blob(req: CopyBlobRequest, temporal: TemporalClient) -> dict:
 
 @router.post("/storage/cache/seed", status_code=202)
 async def seed_blob_cache(req: CopyBlobRequest, temporal: TemporalClient) -> dict:
-    """Provision a Spot VM in the target region to pull the model and upload the initial blob.
+    """Start a SeedBlobWorkflow to pull a model from Ollama registry and upload it to blob storage.
 
-    Only needed when no cached blob exists anywhere yet.  Once the VM finishes
-    uploading, subsequent regions can be populated via the faster server-side
-    copy (POST /storage/cache/copy).
+    The control plane downloads layers directly from registry.ollama.ai — no VM
+    is provisioned.  Once the blob is available, other regions can be populated
+    via the faster server-side CopyBlobWorkflow.
     """
     s = get_settings()
-    models_container = get_models_container()
-    model_items = [
-        item
-        async for item in models_container.query_items(
-            query="SELECT * FROM c WHERE c.model_identifier = @mid",
-            parameters=[{"name": "@mid", "value": req.model_identifier}],
-        )
-    ]
-    if not model_items:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"No registered model for '{req.model_identifier}'. "
-                "Register the model first, then seed the cache."
-            ),
-        )
-    model_item = model_items[0]
-
-    vm_name = f"spot-{model_item['name'][:10].rstrip('-')}-{uuid.uuid4().hex[:8]}"
-    workflow_id = f"provision-{vm_name}"
-
-    from db.cosmos import get_instances_container
-
-    instance = VMInstance(
-        id=vm_name,
-        model_id=model_item["id"],
-        model_name=model_item["name"],
-        vm_name=vm_name,
-        resource_group=s.azure_resource_group,
-        status=VMStatus.pending,
-        workflow_id=workflow_id,
-    )
-    instances_container = get_instances_container()
-    await instances_container.create_item(body=instance.model_dump())
-
+    safe_id = req.model_identifier.replace(":", "-").replace(".", "-")
+    workflow_id = f"seed-{safe_id}-{req.target_region}-{uuid.uuid4().hex[:8]}"
     try:
         await temporal.start_workflow(
-            ProvisionVMWorkflow.run,
-            ProvisionVMInput(
-                model_id=model_item["id"],
-                model_name=model_item["name"],
+            SeedBlobWorkflow.run,
+            SeedBlobInput(
                 model_identifier=req.model_identifier,
-                vm_size=model_item["vm_size"],
-                vm_name=vm_name,
-                resource_group=s.azure_resource_group,
-                force_regions=[req.target_region],
+                target_region=req.target_region,
             ),
             id=workflow_id,
             task_queue=s.temporal_task_queue,
         )
     except Exception as e:
-        logger.error("Failed to start ProvisionVMWorkflow for blob seeding: %s", e)
+        logger.error("Failed to start SeedBlobWorkflow: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
     logger.info(
-        "Seeding initial blob cache for %s in %s via VM %s",
+        "Seeding blob cache for %s in %s (workflow %s)",
         req.model_identifier,
         req.target_region,
-        vm_name,
+        workflow_id,
     )
-    return {"status": "accepted", "workflow_id": workflow_id, "seeding": True}
+    return {"status": "accepted", "workflow_id": workflow_id}
 
 
 @router.delete("/storage/cache/entry")

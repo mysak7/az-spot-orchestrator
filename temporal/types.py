@@ -92,3 +92,17 @@ class CopyBlobResult:
     target_region: str
     size_bytes: int
     duration_seconds: float
+
+
+@dataclass
+class SeedBlobInput:
+    model_identifier: str  # e.g. "qwen2.5:1.5b"
+    target_region: str
+
+
+@dataclass
+class SeedBlobResult:
+    model_identifier: str
+    region: str
+    size_bytes: int
+    duration_seconds: float
