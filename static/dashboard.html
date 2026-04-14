@@ -457,8 +457,14 @@
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 9px 12px;
+    padding: 9px 12px 7px;
     transition: border-color 0.15s;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .rc-top {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -500,6 +506,33 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* ── Progress bar ── */
+  .rc-progress {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .rc-progress-bar {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+
+  .rc-progress-bar.prog-busy {
+    background: var(--yellow);
+    animation: prog-pulse 1.5s ease-in-out infinite;
+  }
+
+  .rc-progress-bar.prog-done  { background: var(--green); }
+  .rc-progress-bar.prog-fail  { background: var(--red); }
+
+  @keyframes prog-pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.55; }
   }
 
   /* ── Sortable headers ── */
@@ -1112,26 +1145,40 @@
       );
     }
 
+    const phaseWidths = { pulling: 25, archiving: 70, uploading: 90 };
+
     document.getElementById('cache-region-grid').innerHTML = _cacheRegions.map(region => {
       const e = byRegion[region];
+      const isAvail   = e && e.status === 'available';
       const isBusy    = e && e.status === 'uploading';
       const isFailed  = e && e.status === 'failed';
       const isChecked = _pendingRegions.has(region);
       const cls = !e ? '' : isBusy ? 'rc-busy' : isFailed ? 'rc-failed' : 'rc-available';
-      const phase = e?.current_phase ? ` · ${e.current_phase}` : '';
+      const phase = e?.current_phase ?? '';
       const size  = e?.size_bytes ? ` · ${fmtBytes(e.size_bytes)}` : '';
       const dur   = e?.upload_duration_seconds ? ` · ${fmtDuration(e.upload_duration_seconds)}` : '';
       const meta  = !e       ? 'not cached'
-                  : isBusy   ? `${e.status}${phase}`
                   : isFailed ? 'failed'
-                  : `available${size}${dur}`;
+                  : isAvail  ? `available${size}${dur}`
+                  : phase    ? phase
+                  : e.status;
+
+      const pct = isAvail ? 100 : isFailed ? 100 : (phaseWidths[phase] ?? 0);
+      const progCls = isAvail ? 'prog-done' : isFailed ? 'prog-fail' : 'prog-busy';
+      const bar = pct > 0
+        ? `<div class="rc-progress"><div class="rc-progress-bar ${progCls}" style="width:${pct}%"></div></div>`
+        : '';
+
       return `
         <div class="region-card ${cls}">
-          <label>
-            <input type="checkbox" ${isBusy ? 'disabled' : ''} ${isChecked ? 'checked' : ''} onchange="onCacheRegionCheck('${esc(region)}', this.checked)">
-            <span class="rc-name">${esc(region)}</span>
-            <span class="rc-meta">${esc(meta)}</span>
-          </label>
+          <div class="rc-top">
+            <label>
+              <input type="checkbox" ${isBusy ? 'disabled' : ''} ${isChecked ? 'checked' : ''} onchange="onCacheRegionCheck('${esc(region)}', this.checked)">
+              <span class="rc-name">${esc(region)}</span>
+              <span class="rc-meta">${esc(meta)}</span>
+            </label>
+          </div>
+          ${bar}
         </div>`;
     }).join('');
 
