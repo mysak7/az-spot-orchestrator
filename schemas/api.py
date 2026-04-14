@@ -79,27 +79,16 @@ class VMEvictedNotification(BaseModel):
 class CacheSourceResponse(BaseModel):
     """Response for GET /api/storage/cache/source — tells VM where to get the model."""
 
-    source: str  # "blob_same_region" | "blob_cross_region" | "ollama"
-    download_url: str | None = None  # SAS URL to download from blob (if blob source)
-    upload_url: str  # SAS URL to upload to blob (for subsequent upload or Ollama fallback)
-    source_region: str | None = None  # Region from which blob will be downloaded (if blob)
+    source: str  # "blob" | "ollama"
+    download_url: str | None = None  # SAS URL to download from blob (if blob found)
 
 
 class CacheCompleteRequest(BaseModel):
-    """Request body for POST /api/storage/cache/complete — VM registers upload."""
+    """Request body for POST /api/storage/cache/complete — Seed workflow registers upload."""
 
     model_identifier: str
     region: str
     size_bytes: int
-    duration_seconds: float
-
-
-class DownloadLogRequest(BaseModel):
-    """Request body for POST /api/storage/cache/download-log — VM logs download timing."""
-
-    model_identifier: str
-    region: str
-    source_region: str
     duration_seconds: float
 
 

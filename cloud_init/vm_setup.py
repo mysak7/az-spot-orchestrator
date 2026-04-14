@@ -108,8 +108,7 @@ def generate_cloud_init(
           - systemctl enable eviction-monitor
           - systemctl start eviction-monitor
 
-          # Wait for Ollama, pull or restore model from cache, then notify ready.
-          # All in one block so variables (VM_REGION, SOURCE_RESP, UPLOAD_URL) persist.
+          # Wait for Ollama, restore model from blob cache or pull from Ollama, then notify ready.
           - |
             # --- Wait for Ollama to accept connections (up to 5 min) ---
             for i in $(seq 1 30); do
@@ -122,26 +121,20 @@ def generate_cloud_init(
               "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-02-01&format=text" \
               2>/dev/null || echo "")
 
-            # --- Ask the control plane for the best model source ---
+            # --- Ask the control plane for the model source ---
             SOURCE_RESP=$(curl -sf \
               "{control_plane_url}/api/storage/cache/source?model_identifier={model_identifier}&region=$VM_REGION" \
               2>/dev/null || echo "{{}}")
             SOURCE=$(echo "$SOURCE_RESP" | python3 -c \
               "import sys,json; print(json.load(sys.stdin).get('source','ollama'))" 2>/dev/null || echo "ollama")
-            UPLOAD_URL=$(echo "$SOURCE_RESP" | python3 -c \
-              "import sys,json; print(json.load(sys.stdin).get('upload_url',''))" 2>/dev/null || echo "")
 
             # --- Blob cache path ---
-            if [ "$SOURCE" != "ollama" ]; then
-              echo "=== Model cache source: $SOURCE ==="
+            if [ "$SOURCE" = "blob" ]; then
+              echo "=== Restoring model from blob cache ==="
               DOWNLOAD_URL=$(echo "$SOURCE_RESP" | python3 -c \
                 "import sys,json; print(json.load(sys.stdin).get('download_url',''))" 2>/dev/null || echo "")
-              SOURCE_REGION=$(echo "$SOURCE_RESP" | python3 -c \
-                "import sys,json; print(json.load(sys.stdin).get('source_region',''))" 2>/dev/null || echo "")
 
               if [ -n "$DOWNLOAD_URL" ]; then
-                echo "Downloading model from $SOURCE_REGION..."
-                START=$(date +%s)
                 if curl -sf -o /tmp/model.tar.gz "$DOWNLOAD_URL"; then
                   echo "Extracting model..."
                   tar -xzf /tmp/model.tar.gz -C /mnt/resource/ || true
@@ -149,16 +142,8 @@ def generate_cloud_init(
                   echo "Model extracted. Restarting Ollama..."
                   systemctl restart ollama
                   sleep 10
-                  END=$(date +%s)
-                  DURATION=$((END - START))
-                  echo "Download and import took $DURATION seconds"
-                  curl -sf -X POST "{control_plane_url}/api/storage/cache/download-log" \
-                    -H "Content-Type: application/json" \
-                    -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"source_region\\":\\"$SOURCE_REGION\\",\\"duration_seconds\\":$DURATION}}" 2>/dev/null || true
-                  SOURCE="blob_done"
+                  SOURCE="done"
                 else
-                  # Blob download failed (expired SAS, missing blob, network error).
-                  # Fall through to Ollama so the VM still becomes usable.
                   echo "WARNING: Blob download failed — falling back to Ollama pull"
                   SOURCE="ollama"
                 fi
@@ -168,75 +153,12 @@ def generate_cloud_init(
               fi
             fi
 
-            # --- Ollama fallback: pull then upload to blob ---
+            # --- Ollama fallback: pull model ---
             if [ "$SOURCE" = "ollama" ]; then
-              echo "=== Pulling model from Ollama (phase: pulling) ==="
-              curl -sf -X POST "{control_plane_url}/api/storage/cache/progress" \
-                -H "Content-Type: application/json" \
-                -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"phase\\":\\"pulling\\"}}" 2>/dev/null || true
-
+              echo "=== Pulling model from Ollama ==="
               if ! ollama pull {model_identifier}; then
                 echo "ERROR: Model pull failed"
-                curl -sf -X POST "{control_plane_url}/api/storage/cache/failed" \
-                  -H "Content-Type: application/json" \
-                  -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\"}}" 2>/dev/null || true
                 exit 1
-              fi
-
-              if [ -n "$UPLOAD_URL" ]; then
-                echo "=== Archiving model (phase: archiving) ==="
-                curl -sf -X POST "{control_plane_url}/api/storage/cache/progress" \
-                  -H "Content-Type: application/json" \
-                  -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"phase\\":\\"archiving\\"}}" 2>/dev/null || true
-
-                # Install azcopy — needed for blobs > 250 MB (most real models).
-                # Extract the binary by name to avoid --wildcards portability issues.
-                mkdir -p /tmp/azcopy_dl
-                if curl -sL "https://aka.ms/downloadazcopy-v10-linux" -o /tmp/azcopy_dl/azcopy.tgz 2>/dev/null; then
-                  tar -xzf /tmp/azcopy_dl/azcopy.tgz -C /tmp/azcopy_dl/ 2>/dev/null || true
-                  AZCOPY_BIN=$(find /tmp/azcopy_dl -name 'azcopy' -type f 2>/dev/null | head -1)
-                  if [ -n "$AZCOPY_BIN" ]; then
-                    mv "$AZCOPY_BIN" /usr/local/bin/azcopy && chmod +x /usr/local/bin/azcopy
-                  fi
-                fi
-                rm -rf /tmp/azcopy_dl
-
-                START=$(date +%s)
-                echo "Creating model archive..."
-                tar -czf /tmp/model.tar.gz -C /mnt/resource models/ 2>/dev/null || true
-
-                UPLOAD_SUCCESS=0
-                if [ -f /tmp/model.tar.gz ]; then
-                  SIZE=$(stat -c%s /tmp/model.tar.gz 2>/dev/null || echo 0)
-                  echo "=== Uploading $SIZE bytes to blob (phase: uploading) ==="
-                  curl -sf -X POST "{control_plane_url}/api/storage/cache/progress" \
-                    -H "Content-Type: application/json" \
-                    -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"phase\\":\\"uploading\\"}}" 2>/dev/null || true
-
-                  if command -v azcopy &> /dev/null; then
-                    azcopy copy /tmp/model.tar.gz "$UPLOAD_URL" --overwrite=false 2>/dev/null && UPLOAD_SUCCESS=1 || true
-                  elif [ "$SIZE" -lt 262144000 ]; then
-                    curl -sf -X PUT -H "x-ms-blob-type: BlockBlob" \
-                      --data-binary @/tmp/model.tar.gz "$UPLOAD_URL" 2>/dev/null && UPLOAD_SUCCESS=1 || true
-                  else
-                    echo "WARNING: azcopy unavailable and model too large for single PUT ($SIZE bytes) — upload skipped"
-                  fi
-                  rm -f /tmp/model.tar.gz
-                fi
-
-                END=$(date +%s)
-                DURATION=$((END - START))
-
-                if [ "$UPLOAD_SUCCESS" -eq 1 ]; then
-                  curl -sf -X POST "{control_plane_url}/api/storage/cache/complete" \
-                    -H "Content-Type: application/json" \
-                    -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\",\\"size_bytes\\":${{SIZE:-0}},\\"duration_seconds\\":$DURATION}}" 2>/dev/null || true
-                else
-                  echo "WARNING: Blob upload failed — marking cache entry as failed"
-                  curl -sf -X POST "{control_plane_url}/api/storage/cache/failed" \
-                    -H "Content-Type: application/json" \
-                    -d "{{\\"model_identifier\\":\\"{model_identifier}\\",\\"region\\":\\"$VM_REGION\\"}}" 2>/dev/null || true
-                fi
               fi
             fi
 

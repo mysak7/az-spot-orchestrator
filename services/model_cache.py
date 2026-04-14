@@ -1,7 +1,7 @@
 """Model caching service for Azure Blob Storage.
 
-Manages finding and generating SAS URLs for cached models, tracking
-upload/download statistics, and selecting the best source region.
+Manages finding and generating SAS URLs for cached models, and selecting
+the best source region for server-side blob copies.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
+from azure.core.exceptions import ResourceNotFoundError
 from azure.identity.aio import DefaultAzureCredential
 from azure.storage.blob import BlobSasPermissions, UserDelegationKey, generate_blob_sas
 from azure.storage.blob.aio import BlobServiceClient
@@ -125,116 +126,31 @@ def _nearest_region(target_region: str, candidate_regions: list[str]) -> str | N
     return nearest if _euclidean_distance(target_region, nearest) < float("inf") else None
 
 
-async def get_best_source(
-    model_identifier: str,
-    vm_region: str,
-) -> dict:
-    """Find the best source for a model and return download/upload URLs.
+async def get_best_source(model_identifier: str, vm_region: str) -> dict:
+    """Check if a cached blob exists for this model in the VM's region.
 
-    Priority:
-    1. Same region in Blob Storage → fastest
-    2. Nearest region in Blob Storage → Azure-to-Azure cross-region
-    3. Ollama (internet) → fallback, requires subsequent upload
-
-    Returns a dict with keys:
-    - source: "blob_same_region" | "blob_cross_region" | "ollama"
-    - download_url: SAS URL to download from blob (if blob source)
-    - upload_url: SAS URL to upload to blob (for Ollama fallback or initial VM)
-    - source_region: the region from which blob is downloaded (if blob source)
+    Blobs are managed manually (or via Seed/Copy workflows).
+    Returns source="blob" with a SAS download URL if found, or source="ollama" if not.
     """
-    container = get_cache_container()
-    logger.info("Finding best source for model %s in region %s", model_identifier, vm_region)
+    blob_name = _blob_name(model_identifier, vm_region)
+    s = get_settings()
+    account_url = f"https://{s.azure_storage_account_name}.blob.core.windows.net"
 
-    # Query all available (uploaded) cache entries for this model
-    query = "SELECT * FROM c WHERE c.model_identifier = @model_id AND c.status = @status"
-    items = []
-    async for item in container.query_items(
-        query=query,
-        parameters=[
-            {"name": "@model_id", "value": model_identifier},
-            {"name": "@status", "value": "available"},
-        ],
-    ):
-        items.append(ModelCacheEntry(**item))
-
-    # Check if we have the model in the same region
-    same_region_entry = next(
-        (e for e in items if e.region == vm_region),
-        None,
-    )
-    if same_region_entry:
-        try:
-            download_url = await _generate_sas_url(same_region_entry.blob_name, "read")
-            upload_url = await _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
-            logger.info("Model %s found in same region %s", model_identifier, vm_region)
-            return {
-                "source": "blob_same_region",
-                "download_url": download_url,
-                "upload_url": upload_url,
-                "source_region": vm_region,
-            }
-        except Exception as e:
-            logger.warning(
-                "Same-region blob found for %s but SAS generation failed — falling back: %s",
-                model_identifier,
-                e,
+    async with DefaultAzureCredential() as credential:
+        async with BlobServiceClient(account_url=account_url, credential=credential) as client:
+            bc = client.get_blob_client(
+                container=s.azure_storage_container_name,
+                blob=blob_name,
             )
-
-    # Find nearest region with the model
-    if items:
-        available_regions = [e.region for e in items]
-        nearest = _nearest_region(vm_region, available_regions)
-        if nearest:
-            nearest_entry = next(e for e in items if e.region == nearest)
             try:
-                download_url = await _generate_sas_url(nearest_entry.blob_name, "read")
-                upload_url = await _generate_sas_url(
-                    _blob_name(model_identifier, vm_region), "write"
-                )
-                logger.info(
-                    "Model %s not in %s, found in nearest region %s (distance=%.1f)",
-                    model_identifier,
-                    vm_region,
-                    nearest,
-                    _euclidean_distance(vm_region, nearest),
-                )
-                return {
-                    "source": "blob_cross_region",
-                    "download_url": download_url,
-                    "upload_url": upload_url,
-                    "source_region": nearest,
-                }
-            except Exception as e:
-                logger.warning(
-                    "Cross-region blob found for %s in %s but SAS generation failed — falling back: %s",
-                    model_identifier,
-                    nearest,
-                    e,
-                )
+                await bc.get_blob_properties()
+            except ResourceNotFoundError:
+                logger.info("No cached blob for %s in %s — VM will use Ollama", model_identifier, vm_region)
+                return {"source": "ollama"}
 
-    # No cached model — fall back to Ollama pull.
-    # Mark upload started *before* generating the SAS URL so that the
-    # dashboard shows the "uploading" entry even if SAS generation fails.
-    logger.info("No cached blob for model %s; falling back to Ollama pull", model_identifier)
-    await mark_upload_started(model_identifier, vm_region)
-
-    try:
-        upload_url = await _generate_sas_url(_blob_name(model_identifier, vm_region), "write")
-    except Exception as e:
-        # Storage account not configured or credentials invalid.  The VM will
-        # still pull from Ollama; it just won't be able to cache the result.
-        logger.warning(
-            "Cannot generate upload SAS URL for %s in %s — storage not configured? (%s)",
-            model_identifier,
-            vm_region,
-            e,
-        )
-        upload_url = ""
-
-    return {
-        "source": "ollama",
-        "upload_url": upload_url,
-    }
+    logger.info("Found cached blob for %s in %s", model_identifier, vm_region)
+    download_url = await _generate_sas_url(blob_name, "read")
+    return {"source": "blob", "download_url": download_url}
 
 
 async def register_upload_complete(
@@ -269,37 +185,6 @@ async def register_upload_complete(
         duration_seconds,
     )
 
-
-async def update_download_stats(
-    model_identifier: str,
-    source_region: str,
-    download_duration_seconds: float,
-) -> None:
-    """Update download statistics for a cache entry."""
-    container = get_cache_container()
-    entry_id = f"{_sanitize_identifier(model_identifier)}-{source_region}"
-
-    try:
-        item = await container.read_item(entry_id, partition_key=entry_id)
-        entry = ModelCacheEntry(**item)
-        entry.last_download_duration_seconds = download_duration_seconds
-        entry.download_count += 1
-        entry.updated_at = datetime.now(UTC).isoformat()
-        await container.upsert_item(entry.model_dump())
-        logger.info(
-            "Updated download stats for %s from %s: %.1fs (count=%d)",
-            model_identifier,
-            source_region,
-            download_duration_seconds,
-            entry.download_count,
-        )
-    except Exception as e:
-        logger.warning(
-            "Failed to update download stats for %s from %s: %s",
-            model_identifier,
-            source_region,
-            e,
-        )
 
 
 async def mark_upload_started(model_identifier: str, region: str) -> None:

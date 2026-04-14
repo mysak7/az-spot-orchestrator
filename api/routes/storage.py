@@ -10,12 +10,8 @@ from fastapi import APIRouter, HTTPException
 from api.deps import TemporalClient
 from config import get_settings
 from schemas.api import (
-    CacheCompleteRequest,
-    CacheFailedRequest,
-    CacheProgressRequest,
     CacheSourceResponse,
     CopyBlobRequest,
-    DownloadLogRequest,
     ModelCacheEntryResponse,
 )
 from services.model_cache import (
@@ -23,10 +19,6 @@ from services.model_cache import (
     find_best_copy_source,
     get_best_source,
     list_cache_entries,
-    mark_upload_failed,
-    register_upload_complete,
-    update_download_stats,
-    update_upload_phase,
 )
 from temporal.types import CopyBlobInput, SeedBlobInput
 from temporal.workflows.blob_copy import CopyBlobWorkflow
@@ -62,73 +54,6 @@ async def get_cache_source(
         return CacheSourceResponse(**source_info)
     except Exception as e:
         logger.error("Failed to get cache source for %s in %s: %s", model_identifier, region, e)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.post("/storage/cache/complete")
-async def register_cache_upload(req: CacheCompleteRequest) -> dict:
-    """Register that a model has been successfully uploaded to blob storage."""
-    try:
-        await register_upload_complete(
-            req.model_identifier,
-            req.region,
-            req.size_bytes,
-            req.duration_seconds,
-        )
-        return {
-            "status": "registered",
-            "model_identifier": req.model_identifier,
-            "region": req.region,
-        }
-    except Exception as e:
-        logger.error("Failed to register cache upload: %s", e)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.post("/storage/cache/progress")
-async def report_cache_progress(req: CacheProgressRequest) -> dict:
-    """Update the current phase of an in-progress model upload.
-
-    Called by the Spot VM at each milestone:
-    - phase='pulling'   — ollama pull started
-    - phase='archiving' — tar compression started
-    - phase='uploading' — blob upload started
-    """
-    try:
-        await update_upload_phase(req.model_identifier, req.region, req.phase)
-        return {"status": "updated", "phase": req.phase}
-    except Exception as e:
-        logger.error("Failed to update cache progress: %s", e)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.post("/storage/cache/failed")
-async def report_cache_failed(req: CacheFailedRequest) -> dict:
-    """Mark a cache entry as failed when the VM encounters an error."""
-    try:
-        await mark_upload_failed(req.model_identifier, req.region)
-        return {"status": "marked_failed"}
-    except Exception as e:
-        logger.error("Failed to mark cache as failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.post("/storage/cache/download-log")
-async def log_cache_download(req: DownloadLogRequest) -> dict:
-    """Log download timing statistics for a cached model."""
-    try:
-        await update_download_stats(
-            req.model_identifier,
-            req.source_region,
-            req.duration_seconds,
-        )
-        return {
-            "status": "logged",
-            "model_identifier": req.model_identifier,
-            "source_region": req.source_region,
-        }
-    except Exception as e:
-        logger.error("Failed to log cache download: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
