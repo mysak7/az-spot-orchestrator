@@ -205,8 +205,10 @@ async def get_cheapest_region(input: GetCheapestRegionInput) -> list[str]:
 
     # ── 1b. Per-region Spot quota filter ─────────────────────────────────
     # lowPriorityCores quota is per-region — check each region individually
-    # and exclude those without enough headroom. Only fail if every region
-    # is exhausted (quota is 3/region, so other regions may still have room).
+    # and exclude those without enough headroom. This is a best-effort filter:
+    # if ALL regions report insufficient quota (e.g. subscription limit < VM vCPUs)
+    # we fall back to the full available list and let the provisioner handle the
+    # Azure-level rejection per-region rather than hard-blocking here.
     if vcpu_count > 0 and available:
         quota_ok = []
         for r in available:
@@ -214,14 +216,16 @@ async def get_cheapest_region(input: GetCheapestRegionInput) -> list[str]:
                 quota_ok.append(r)
             else:
                 logger.info("Region %s excluded: insufficient Spot quota for %s (%d vCPUs)", r, input.vm_size, vcpu_count)
-        if not quota_ok:
-            raise ApplicationError(
-                f"No region has sufficient Spot quota for {input.vm_size} ({vcpu_count} vCPUs). "
-                "Request a quota increase at aka.ms/AzurePortalQuota.",
-                type="InsufficientSpotQuota",
-                non_retryable=True,
+        if quota_ok:
+            available = quota_ok
+        else:
+            logger.warning(
+                "All regions report insufficient lowPriorityCores quota for %s (%d vCPUs) — "
+                "proceeding anyway; provisioner will handle Azure-level rejection. "
+                "Consider requesting a quota increase at aka.ms/AzurePortalQuota.",
+                input.vm_size,
+                vcpu_count,
             )
-        available = quota_ok
 
     prices: dict[str, float] = {}
     scores: dict[str, int] = {}
