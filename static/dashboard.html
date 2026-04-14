@@ -459,6 +459,9 @@
     border-radius: var(--radius);
     padding: 9px 12px;
     transition: border-color 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   .region-card label {
@@ -466,7 +469,8 @@
     align-items: center;
     gap: 8px;
     cursor: pointer;
-    width: 100%;
+    flex: 1;
+    min-width: 0;
   }
 
   .region-card input[type=checkbox] {
@@ -480,6 +484,22 @@
   .region-card.rc-available { border-color: var(--green); }
   .region-card.rc-busy      { border-color: var(--yellow); }
   .region-card.rc-failed    { border-color: var(--red); }
+  .region-card.rc-nosource  { border-color: var(--orange); }
+
+  .btn-seed {
+    margin-left: auto;
+    background: transparent;
+    border: 1px solid var(--orange);
+    color: var(--orange);
+    border-radius: var(--radius);
+    font-size: 11px;
+    padding: 2px 8px;
+    cursor: pointer;
+    font-family: var(--font);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .btn-seed:hover { background: rgba(240,136,62,0.12); }
 
   .rc-name {
     font-size: 13px;
@@ -1088,6 +1108,13 @@
     renderCache(_cacheEntries);
   }
 
+  // True when at least one available blob exists for the selected model in any region
+  function _hasAnySourceBlob() {
+    return _cacheEntries.some(
+      e => e.model_identifier === _selectedCacheModel && e.status === 'available'
+    );
+  }
+
   function renderCacheRegionPanel() {
     const panel = document.getElementById('cache-region-panel');
     if (!_selectedCacheModel || !_cacheRegions.length) {
@@ -1100,6 +1127,8 @@
     const byRegion = {};
     modelEntries.forEach(e => { byRegion[e.region] = e; });
 
+    const hasSource = _hasAnySourceBlob();
+
     // Initialise pending state when the model changes
     if (_pendingModelForRegions !== _selectedCacheModel) {
       _pendingModelForRegions = _selectedCacheModel;
@@ -1110,24 +1139,36 @@
 
     document.getElementById('cache-region-grid').innerHTML = _cacheRegions.map(region => {
       const e = byRegion[region];
-      const isBusy    = e && e.status === 'uploading';
-      const isFailed  = e && e.status === 'failed';
-      const isChecked = _pendingRegions.has(region);
-      const cls = !e ? '' : isBusy ? 'rc-busy' : isFailed ? 'rc-failed' : 'rc-available';
+      const isBusy     = e && e.status === 'uploading';
+      const isFailed   = e && e.status === 'failed';
+      const isAvail    = e && e.status === 'available';
+      const isChecked  = _pendingRegions.has(region);
+      // A region needs seeding when: no blob exists AND no source blob is available anywhere
+      const needsSeed  = !e && !hasSource;
+      const cls = needsSeed  ? 'rc-nosource'
+                : !e         ? ''
+                : isBusy     ? 'rc-busy'
+                : isFailed   ? 'rc-failed'
+                : 'rc-available';
       const phase = e?.current_phase ? ` · ${e.current_phase}` : '';
       const size  = e?.size_bytes ? ` · ${fmtBytes(e.size_bytes)}` : '';
       const dur   = e?.upload_duration_seconds ? ` · ${fmtDuration(e.upload_duration_seconds)}` : '';
-      const meta  = !e ? 'not cached'
-                  : isBusy   ? `${e.status}${phase}`
-                  : isFailed ? 'failed'
+      const meta  = needsSeed  ? 'no source blob'
+                  : !e         ? 'not cached'
+                  : isBusy     ? `${e.status}${phase}`
+                  : isFailed   ? 'failed'
                   : `available${size}${dur}`;
+      const seedBtn = needsSeed
+        ? `<button class="btn-seed" onclick="seedCacheRegion('${esc(region)}')" title="Provision a VM in this region to pull and upload the initial blob">Seed via VM</button>`
+        : '';
+      const checkbox = needsSeed ? '' : `<input type="checkbox" ${isBusy ? 'disabled' : ''} ${isChecked ? 'checked' : ''} onchange="onCacheRegionCheck('${esc(region)}', this.checked)">`;
       return `
         <div class="region-card ${cls}">
-          <label>
-            <input type="checkbox" ${isBusy ? 'disabled' : ''} ${isChecked ? 'checked' : ''} onchange="onCacheRegionCheck('${esc(region)}', this.checked)">
+          <label style="cursor:${needsSeed ? 'default' : 'pointer'}">
+            ${checkbox}
             <span class="rc-name">${esc(region)}</span>
             <span class="rc-meta">${esc(meta)}</span>
-          </label>
+          </label>${seedBtn}
         </div>`;
     }).join('');
 
@@ -1153,8 +1194,20 @@
   }
 
   function checkAllCacheRegions(check) {
-    if (check) _cacheRegions.forEach(r => _pendingRegions.add(r));
-    else _pendingRegions.clear();
+    const byRegion = {};
+    _cacheEntries.filter(e => e.model_identifier === _selectedCacheModel)
+                 .forEach(e => { byRegion[e.region] = e; });
+    const hasSource = _hasAnySourceBlob();
+    if (check) {
+      // Only check regions that have a blob or can be blob-copied (source exists)
+      _cacheRegions.forEach(r => {
+        const e = byRegion[r];
+        const needsSeed = !e && !hasSource;
+        if (!needsSeed) _pendingRegions.add(r);
+      });
+    } else {
+      _pendingRegions.clear();
+    }
     renderCacheRegionPanel();
   }
 
@@ -1176,21 +1229,19 @@
       if (!confirm(msg)) return;
     }
 
-    let provisionCount = 0;
+    let copyCount = 0;
     for (const region of toAdd) {
       try {
-        const res = await apiFetch('/api/storage/cache/copy', {
+        await apiFetch('/api/storage/cache/copy', {
           method: 'POST',
           body: JSON.stringify({ model_identifier: _selectedCacheModel, target_region: region }),
         });
-        if (res && res.provisioning) provisionCount++;
+        copyCount++;
       } catch (err) {
         toast(`Copy to ${region} failed: ${err.message}`, 'error');
       }
     }
-    const copyCount = toAdd.length - provisionCount;
-    if (provisionCount) toast(`Provisioning VM in ${provisionCount} region(s) to seed initial cache`, 'success');
-    if (copyCount > 0) toast(`Copy started for ${copyCount} region(s)`, 'success');
+    if (copyCount > 0) toast(`Blob copy started for ${copyCount} region(s)`, 'success');
 
     for (const region of toRemove) {
       try {
@@ -1204,6 +1255,20 @@
     }
     if (toRemove.length) toast(`Deleted from ${toRemove.length} region(s)`, 'success');
 
+    refresh();
+  }
+
+  async function seedCacheRegion(region) {
+    if (!confirm(`Provision a Spot VM in ${region} to pull "${_selectedCacheModel}" and upload the initial blob?\n\nThis is only needed because no cached blob exists yet.`)) return;
+    try {
+      await apiFetch('/api/storage/cache/seed', {
+        method: 'POST',
+        body: JSON.stringify({ model_identifier: _selectedCacheModel, target_region: region }),
+      });
+      toast(`VM provisioning started in ${region} to seed the initial blob`, 'success');
+    } catch (err) {
+      toast(`Seed in ${region} failed: ${err.message}`, 'error');
+    }
     refresh();
   }
 

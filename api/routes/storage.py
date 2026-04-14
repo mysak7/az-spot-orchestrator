@@ -142,41 +142,47 @@ async def copy_blob(req: CopyBlobRequest, temporal: TemporalClient) -> dict:
     """Start a CopyBlobWorkflow to replicate a cached model to a new region.
 
     Uses Azure server-side copy from the nearest available source — no data
-    leaves Azure's backbone.
-
-    If no source blob exists yet (first time caching this model), falls back to
-    provisioning a Spot VM in the target region. The VM will pull the model via
-    Ollama and upload the blob, seeding the initial cache entry.
+    leaves Azure's backbone.  Returns 422 if no source blob exists yet; use
+    POST /storage/cache/seed to provision a VM and create the initial blob.
     """
     source_region = await find_best_copy_source(req.model_identifier, req.target_region)
+    if source_region is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No cached blob found for '{req.model_identifier}' in any region. "
+                "Use the Seed action to provision a VM and create the initial blob."
+            ),
+        )
+
     s = get_settings()
     safe_id = req.model_identifier.replace(":", "-").replace(".", "-")
+    workflow_id = f"copy-{safe_id}-to-{req.target_region}-{uuid.uuid4().hex[:8]}"
+    try:
+        await temporal.start_workflow(
+            CopyBlobWorkflow.run,
+            CopyBlobInput(
+                model_identifier=req.model_identifier,
+                target_region=req.target_region,
+            ),
+            id=workflow_id,
+            task_queue=s.temporal_task_queue,
+        )
+    except Exception as e:
+        logger.error("Failed to start CopyBlobWorkflow: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return {"status": "accepted", "workflow_id": workflow_id}
 
-    if source_region is not None:
-        # Fast path: server-side blob copy from an existing region.
-        workflow_id = f"copy-{safe_id}-to-{req.target_region}-{uuid.uuid4().hex[:8]}"
-        try:
-            await temporal.start_workflow(
-                CopyBlobWorkflow.run,
-                CopyBlobInput(
-                    model_identifier=req.model_identifier,
-                    target_region=req.target_region,
-                ),
-                id=workflow_id,
-                task_queue=s.temporal_task_queue,
-            )
-        except Exception as e:
-            logger.error("Failed to start CopyBlobWorkflow: %s", e)
-            raise HTTPException(status_code=500, detail=str(e)) from e
-        return {"status": "accepted", "workflow_id": workflow_id}
 
-    # Slow path: no source blob — provision a VM in the target region so it pulls
-    # the model from Ollama and uploads the initial blob to storage.
-    logger.info(
-        "No source blob for %s; provisioning VM in %s to seed initial cache",
-        req.model_identifier,
-        req.target_region,
-    )
+@router.post("/storage/cache/seed", status_code=202)
+async def seed_blob_cache(req: CopyBlobRequest, temporal: TemporalClient) -> dict:
+    """Provision a Spot VM in the target region to pull the model and upload the initial blob.
+
+    Only needed when no cached blob exists anywhere yet.  Once the VM finishes
+    uploading, subsequent regions can be populated via the faster server-side
+    copy (POST /storage/cache/copy).
+    """
+    s = get_settings()
     models_container = get_models_container()
     model_items = [
         item
@@ -190,7 +196,7 @@ async def copy_blob(req: CopyBlobRequest, temporal: TemporalClient) -> dict:
             status_code=422,
             detail=(
                 f"No registered model for '{req.model_identifier}'. "
-                "Register the model first, then set up the cache."
+                "Register the model first, then seed the cache."
             ),
         )
     model_item = model_items[0]
@@ -231,7 +237,13 @@ async def copy_blob(req: CopyBlobRequest, temporal: TemporalClient) -> dict:
         logger.error("Failed to start ProvisionVMWorkflow for blob seeding: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
-    return {"status": "accepted", "workflow_id": workflow_id, "provisioning": True}
+    logger.info(
+        "Seeding initial blob cache for %s in %s via VM %s",
+        req.model_identifier,
+        req.target_region,
+        vm_name,
+    )
+    return {"status": "accepted", "workflow_id": workflow_id, "seeding": True}
 
 
 @router.delete("/storage/cache/entry")
