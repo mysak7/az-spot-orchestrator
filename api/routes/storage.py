@@ -28,8 +28,11 @@ from services.model_cache import (
     update_download_stats,
     update_upload_phase,
 )
-from temporal.types import CopyBlobInput
+from db.cosmos import get_models_container
+from db.models import VMInstance, VMStatus
+from temporal.types import CopyBlobInput, ProvisionVMInput
 from temporal.workflows.blob_copy import CopyBlobWorkflow
+from temporal.workflows.vm_provisioning import ProvisionVMWorkflow
 
 logger = logging.getLogger(__name__)
 
@@ -140,31 +143,95 @@ async def copy_blob(req: CopyBlobRequest, temporal: TemporalClient) -> dict:
 
     Uses Azure server-side copy from the nearest available source — no data
     leaves Azure's backbone.
+
+    If no source blob exists yet (first time caching this model), falls back to
+    provisioning a Spot VM in the target region. The VM will pull the model via
+    Ollama and upload the blob, seeding the initial cache entry.
     """
     source_region = await find_best_copy_source(req.model_identifier, req.target_region)
-    if source_region is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"No available blob source for '{req.model_identifier}' — provision a VM first to create an initial cache entry",
-        )
-
     s = get_settings()
     safe_id = req.model_identifier.replace(":", "-").replace(".", "-")
-    workflow_id = f"copy-{safe_id}-to-{req.target_region}-{uuid.uuid4().hex[:8]}"
+
+    if source_region is not None:
+        # Fast path: server-side blob copy from an existing region.
+        workflow_id = f"copy-{safe_id}-to-{req.target_region}-{uuid.uuid4().hex[:8]}"
+        try:
+            await temporal.start_workflow(
+                CopyBlobWorkflow.run,
+                CopyBlobInput(
+                    model_identifier=req.model_identifier,
+                    target_region=req.target_region,
+                ),
+                id=workflow_id,
+                task_queue=s.temporal_task_queue,
+            )
+        except Exception as e:
+            logger.error("Failed to start CopyBlobWorkflow: %s", e)
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return {"status": "accepted", "workflow_id": workflow_id}
+
+    # Slow path: no source blob — provision a VM in the target region so it pulls
+    # the model from Ollama and uploads the initial blob to storage.
+    logger.info(
+        "No source blob for %s; provisioning VM in %s to seed initial cache",
+        req.model_identifier,
+        req.target_region,
+    )
+    models_container = get_models_container()
+    model_items = [
+        item
+        async for item in models_container.query_items(
+            query="SELECT * FROM c WHERE c.model_identifier = @mid",
+            parameters=[{"name": "@mid", "value": req.model_identifier}],
+        )
+    ]
+    if not model_items:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No registered model for '{req.model_identifier}'. "
+                "Register the model first, then set up the cache."
+            ),
+        )
+    model_item = model_items[0]
+
+    vm_name = f"spot-{model_item['name'][:10].rstrip('-')}-{uuid.uuid4().hex[:8]}"
+    workflow_id = f"provision-{vm_name}"
+
+    from db.cosmos import get_instances_container
+
+    instance = VMInstance(
+        id=vm_name,
+        model_id=model_item["id"],
+        model_name=model_item["name"],
+        vm_name=vm_name,
+        resource_group=s.azure_resource_group,
+        status=VMStatus.pending,
+        workflow_id=workflow_id,
+    )
+    instances_container = get_instances_container()
+    await instances_container.create_item(body=instance.model_dump())
+
     try:
         await temporal.start_workflow(
-            CopyBlobWorkflow.run,
-            CopyBlobInput(
+            ProvisionVMWorkflow.run,
+            ProvisionVMInput(
+                model_id=model_item["id"],
+                model_name=model_item["name"],
                 model_identifier=req.model_identifier,
-                target_region=req.target_region,
+                vm_size=model_item["vm_size"],
+                vm_name=vm_name,
+                resource_group=s.azure_resource_group,
+                force_regions=[req.target_region],
             ),
             id=workflow_id,
             task_queue=s.temporal_task_queue,
         )
     except Exception as e:
-        logger.error("Failed to start CopyBlobWorkflow: %s", e)
+        logger.error("Failed to start ProvisionVMWorkflow for blob seeding: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e
-    return {"status": "accepted", "workflow_id": workflow_id}
+
+    return {"status": "accepted", "workflow_id": workflow_id, "provisioning": True}
 
 
 @router.delete("/storage/cache/entry")

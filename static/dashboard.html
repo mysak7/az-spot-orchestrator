@@ -1176,17 +1176,21 @@
       if (!confirm(msg)) return;
     }
 
+    let provisionCount = 0;
     for (const region of toAdd) {
       try {
-        await apiFetch('/api/storage/cache/copy', {
+        const res = await apiFetch('/api/storage/cache/copy', {
           method: 'POST',
           body: JSON.stringify({ model_identifier: _selectedCacheModel, target_region: region }),
         });
+        if (res && res.provisioning) provisionCount++;
       } catch (err) {
         toast(`Copy to ${region} failed: ${err.message}`, 'error');
       }
     }
-    if (toAdd.length) toast(`Copy started for ${toAdd.length} region(s)`, 'success');
+    const copyCount = toAdd.length - provisionCount;
+    if (provisionCount) toast(`Provisioning VM in ${provisionCount} region(s) to seed initial cache`, 'success');
+    if (copyCount > 0) toast(`Copy started for ${copyCount} region(s)`, 'success');
 
     for (const region of toRemove) {
       try {

@@ -16,6 +16,7 @@ class ProvisionVMInput:
     vm_size: str
     vm_name: str
     resource_group: str
+    force_regions: list[str] | None = None  # when set, try only these regions in order
 
 
 @dataclass

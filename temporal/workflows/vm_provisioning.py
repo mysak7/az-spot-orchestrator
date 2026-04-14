@@ -74,16 +74,19 @@ class ProvisionVMWorkflow:
     async def run(self, input: ProvisionVMInput) -> ProvisionVMResult:
         settings = get_settings()
 
-        # ── Step 1: regions ordered cheapest-first ────────────────────────
-        regions: list[str] = await workflow.execute_activity(
-            get_cheapest_region,
-            GetCheapestRegionInput(
-                vm_size=input.vm_size,
-                candidate_regions=settings.azure_candidate_regions,
-            ),
-            start_to_close_timeout=timedelta(minutes=5),
-            retry_policy=_FAST_RETRY,
-        )
+        # ── Step 1: regions ordered cheapest-first (or forced list) ──────
+        if input.force_regions:
+            regions: list[str] = input.force_regions
+        else:
+            regions = await workflow.execute_activity(
+                get_cheapest_region,
+                GetCheapestRegionInput(
+                    vm_size=input.vm_size,
+                    candidate_regions=settings.azure_candidate_regions,
+                ),
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=_FAST_RETRY,
+            )
 
         # ── Step 2: provision VM, falling back through regions on SkuNotAvailable ──
         # Note: get_cheapest_region raises InsufficientSpotQuota (non_retryable) if
