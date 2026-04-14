@@ -41,6 +41,13 @@ DEFAULT_MODELS: list[DefaultModel] = [
         vm_size="Standard_D2s_v3",
         description="Qwen 3.5 0.8B – ultra-lightweight CPU model",
     ),
+    DefaultModel(
+        name="qwen3-32b",
+        model_identifier="qwen3:32b",
+        size_mb=20000,
+        vm_size="Standard_NC12s_v3",  # 2× V100 16 GB = 32 GB VRAM
+        description="Qwen3 32B – best Qwen model fitting in 32 GB VRAM (Q4_K_M ~20 GB)",
+    ),
 ]
 
 
