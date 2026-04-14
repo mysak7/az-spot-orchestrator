@@ -747,8 +747,9 @@
         <div style="display:flex;align-items:center;margin-bottom:12px">
           <div class="region-spread-header" style="margin-bottom:0">Region distribution</div>
           <div style="margin-left:auto;display:flex;gap:8px">
-            <button class="btn btn-ghost" style="font-size:12px;padding:3px 10px" onclick="toggleAllCacheRegions(true)">Check all</button>
-            <button class="btn btn-ghost" style="font-size:12px;padding:3px 10px" onclick="toggleAllCacheRegions(false)">Uncheck all</button>
+            <button class="btn btn-ghost" style="font-size:12px;padding:3px 10px" onclick="checkAllCacheRegions(true)">Check all</button>
+            <button class="btn btn-ghost" style="font-size:12px;padding:3px 10px" onclick="checkAllCacheRegions(false)">Uncheck all</button>
+            <button id="cache-confirm-btn" class="btn btn-primary" style="font-size:12px;padding:3px 12px" disabled onclick="confirmCacheRegions()">Confirm</button>
           </div>
         </div>
         <div class="region-grid" id="cache-region-grid"></div>
@@ -882,6 +883,8 @@
   let _cacheEntries = [];
   let _cacheRegions = [];
   let _selectedCacheModel = '';
+  let _pendingRegions = new Set();       // desired checked state (local UI)
+  let _pendingModelForRegions = null;    // which model _pendingRegions belongs to
 
   // ── Navigation ─────────────────────────────────────────────────────────────
   function navigate(page) {
@@ -1096,110 +1099,107 @@
     const modelEntries = _cacheEntries.filter(e => e.model_identifier === _selectedCacheModel);
     const byRegion = {};
     modelEntries.forEach(e => { byRegion[e.region] = e; });
-    const hasSource = modelEntries.some(e => e.status === 'available');
+
+    // Initialise pending state when the model changes
+    if (_pendingModelForRegions !== _selectedCacheModel) {
+      _pendingModelForRegions = _selectedCacheModel;
+      _pendingRegions = new Set(
+        _cacheRegions.filter(r => byRegion[r] && byRegion[r].status !== 'failed')
+      );
+    }
 
     document.getElementById('cache-region-grid').innerHTML = _cacheRegions.map(region => {
       const e = byRegion[region];
-      if (!e) {
-          return `
-          <div class="region-card">
-            <label>
-              <input type="checkbox" onchange="toggleCacheRegion('${esc(region)}', this.checked)">
-              <span class="rc-name">${esc(region)}</span>
-              <span class="rc-meta">not cached</span>
-            </label>
-          </div>`;
-      }
-      const isBusy   = e.status === 'uploading';
-      const isFailed = e.status === 'failed';
-      const cls = isBusy ? 'rc-busy' : isFailed ? 'rc-failed' : 'rc-available';
-      const phase = e.current_phase ? ` · ${e.current_phase}` : '';
-      const size  = e.size_bytes ? ` · ${fmtBytes(e.size_bytes)}` : '';
-      const dur   = e.upload_duration_seconds ? ` · ${fmtDuration(e.upload_duration_seconds)}` : '';
-      const meta  = isBusy ? `${e.status}${phase}` : isFailed ? 'failed' : `available${size}${dur}`;
+      const isBusy    = e && e.status === 'uploading';
+      const isFailed  = e && e.status === 'failed';
+      const isChecked = _pendingRegions.has(region);
+      const cls = !e ? '' : isBusy ? 'rc-busy' : isFailed ? 'rc-failed' : 'rc-available';
+      const phase = e?.current_phase ? ` · ${e.current_phase}` : '';
+      const size  = e?.size_bytes ? ` · ${fmtBytes(e.size_bytes)}` : '';
+      const dur   = e?.upload_duration_seconds ? ` · ${fmtDuration(e.upload_duration_seconds)}` : '';
+      const meta  = !e ? 'not cached'
+                  : isBusy   ? `${e.status}${phase}`
+                  : isFailed ? 'failed'
+                  : `available${size}${dur}`;
       return `
         <div class="region-card ${cls}">
           <label>
-            <input type="checkbox" ${isBusy ? 'disabled' : ''} checked onchange="toggleCacheRegion('${esc(region)}', this.checked)">
+            <input type="checkbox" ${isBusy ? 'disabled' : ''} ${isChecked ? 'checked' : ''} onchange="onCacheRegionCheck('${esc(region)}', this.checked)">
             <span class="rc-name">${esc(region)}</span>
             <span class="rc-meta">${esc(meta)}</span>
           </label>
         </div>`;
     }).join('');
+
+    _updateConfirmButton(byRegion);
   }
 
-  async function toggleCacheRegion(region, checked) {
-    if (checked) {
+  function onCacheRegionCheck(region, checked) {
+    if (checked) _pendingRegions.add(region);
+    else _pendingRegions.delete(region);
+    const byRegion = {};
+    _cacheEntries.filter(e => e.model_identifier === _selectedCacheModel)
+                 .forEach(e => { byRegion[e.region] = e; });
+    _updateConfirmButton(byRegion);
+  }
+
+  function _updateConfirmButton(byRegion) {
+    const btn = document.getElementById('cache-confirm-btn');
+    const toAdd    = _cacheRegions.filter(r => _pendingRegions.has(r) && !(byRegion[r] && byRegion[r].status === 'available'));
+    const toRemove = _cacheRegions.filter(r => !_pendingRegions.has(r) && byRegion[r] && byRegion[r].status === 'available');
+    const hasDiff  = toAdd.length > 0 || toRemove.length > 0;
+    btn.disabled = !hasDiff;
+    btn.style.opacity = hasDiff ? '' : '0.4';
+  }
+
+  function checkAllCacheRegions(check) {
+    if (check) _cacheRegions.forEach(r => _pendingRegions.add(r));
+    else _pendingRegions.clear();
+    renderCacheRegionPanel();
+  }
+
+  async function confirmCacheRegions() {
+    const modelEntries = _cacheEntries.filter(e => e.model_identifier === _selectedCacheModel);
+    const byRegion = {};
+    modelEntries.forEach(e => { byRegion[e.region] = e; });
+
+    const toAdd    = _cacheRegions.filter(r => _pendingRegions.has(r) && !(byRegion[r] && byRegion[r].status === 'available'));
+    const toRemove = _cacheRegions.filter(r => !_pendingRegions.has(r) && byRegion[r] && byRegion[r].status === 'available');
+
+    if (toRemove.length) {
+      const availableAfter = modelEntries.filter(e => e.status === 'available').length - toRemove.length;
+      const msg = availableAfter <= 0
+        ? `This will delete ALL cached copies of ${_selectedCacheModel}. Continue?`
+        : toRemove.length === 1
+          ? `Delete blob from ${toRemove[0]}?`
+          : `Delete blobs from ${toRemove.length} region(s)?`;
+      if (!confirm(msg)) return;
+    }
+
+    for (const region of toAdd) {
       try {
         await apiFetch('/api/storage/cache/copy', {
           method: 'POST',
           body: JSON.stringify({ model_identifier: _selectedCacheModel, target_region: region }),
         });
-        toast(`Copy to ${region} started`, 'success');
-        refresh();
       } catch (err) {
-        toast(`Copy failed: ${err.message}`, 'error');
-        refresh();
+        toast(`Copy to ${region} failed: ${err.message}`, 'error');
       }
-    } else {
-      const availableCount = _cacheEntries.filter(
-        e => e.model_identifier === _selectedCacheModel && e.status === 'available'
-      ).length;
-      const msg = availableCount <= 1
-        ? `This is the LAST cached copy of ${_selectedCacheModel}. Delete blob from ${region}?`
-        : `Delete blob from ${region}?`;
-      if (!confirm(msg)) { refresh(); return; }
+    }
+    if (toAdd.length) toast(`Copy started for ${toAdd.length} region(s)`, 'success');
+
+    for (const region of toRemove) {
       try {
         await apiFetch(
           `/api/storage/cache/entry?model_identifier=${encodeURIComponent(_selectedCacheModel)}&region=${encodeURIComponent(region)}`,
           { method: 'DELETE' }
         );
-        toast(`Blob deleted from ${region}`, 'success');
-        refresh();
       } catch (err) {
-        toast(`Delete failed: ${err.message}`, 'error');
-        refresh();
+        toast(`Delete from ${region} failed: ${err.message}`, 'error');
       }
     }
-  }
+    if (toRemove.length) toast(`Deleted from ${toRemove.length} region(s)`, 'success');
 
-  async function toggleAllCacheRegions(check) {
-    const modelEntries = _cacheEntries.filter(e => e.model_identifier === _selectedCacheModel);
-    const byRegion = {};
-    modelEntries.forEach(e => { byRegion[e.region] = e; });
-
-    if (check) {
-      // Check all uncached regions (skip busy/already cached)
-      const targets = _cacheRegions.filter(r => !byRegion[r]);
-      if (!targets.length) { toast('All regions already cached', 'success'); return; }
-      for (const region of targets) {
-        try {
-          await apiFetch('/api/storage/cache/copy', {
-            method: 'POST',
-            body: JSON.stringify({ model_identifier: _selectedCacheModel, target_region: region }),
-          });
-        } catch (err) {
-          toast(`Copy to ${region} failed: ${err.message}`, 'error');
-        }
-      }
-      toast(`Copy started for ${targets.length} region(s)`, 'success');
-    } else {
-      // Uncheck all — delete all available copies
-      const available = _cacheRegions.filter(r => byRegion[r] && byRegion[r].status === 'available');
-      if (!available.length) { toast('Nothing to remove', 'error'); return; }
-      if (!confirm(`Delete blobs from all ${available.length} region(s)?`)) return;
-      for (const region of available) {
-        try {
-          await apiFetch(
-            `/api/storage/cache/entry?model_identifier=${encodeURIComponent(_selectedCacheModel)}&region=${encodeURIComponent(region)}`,
-            { method: 'DELETE' }
-          );
-        } catch (err) {
-          toast(`Delete from ${region} failed: ${err.message}`, 'error');
-        }
-      }
-      toast(`Deleted from ${available.length} region(s)`, 'success');
-    }
     refresh();
   }
 
