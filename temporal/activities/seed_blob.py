@@ -15,6 +15,7 @@ import tarfile
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 from temporalio import activity
@@ -27,6 +28,7 @@ from services.model_cache import (
     mark_upload_failed,
     mark_upload_started,
     register_upload_complete,
+    update_download_progress,
     update_upload_phase,
 )
 from temporal.types import SeedBlobInput, SeedBlobResult
@@ -53,8 +55,12 @@ async def _download_layer(
     digest: str,
     dest: Path,
     sem: asyncio.Semaphore,
+    on_bytes: Any | None = None,
 ) -> None:
-    """Stream a single blob layer to *dest* with bounded concurrency."""
+    """Stream a single blob layer to *dest* with bounded concurrency.
+
+    *on_bytes* is an optional async callable(n_bytes) called after each chunk.
+    """
     async with sem:
         activity.heartbeat(f"downloading {digest[:19]}")
         async with client.stream(
@@ -65,6 +71,8 @@ async def _download_layer(
             with dest.open("wb") as fh:
                 async for chunk in resp.aiter_bytes(chunk_size=4 * 1024 * 1024):
                     fh.write(chunk)
+                    if on_bytes is not None:
+                        await on_bytes(len(chunk))
 
 
 def _build_tar(models_dir: Path, tar_path: Path) -> int:
@@ -141,6 +149,21 @@ async def seed_blob_from_registry(input: SeedBlobInput) -> SeedBlobResult:
             (manifests_dir / tag).write_text(json.dumps(manifest))
 
             # ── Download layers ─────────────────────────────────────────────────
+            total_bytes = sum(b.get("size", 0) for b in all_blobs)
+            downloaded_bytes = 0
+            progress_lock = asyncio.Lock()
+            last_progress_time = 0.0
+
+            async def _on_bytes(n: int) -> None:
+                nonlocal downloaded_bytes, last_progress_time
+                async with progress_lock:
+                    downloaded_bytes += n
+                    now = time.monotonic()
+                    if now - last_progress_time >= 2.0 and total_bytes > 0:
+                        last_progress_time = now
+                        pct = min(99, int(downloaded_bytes * 100 / total_bytes))
+                        await update_download_progress(model_identifier, region, pct)
+
             sem = asyncio.Semaphore(_DOWNLOAD_CONCURRENCY)
             tasks = [
                 _download_layer(
@@ -149,6 +172,7 @@ async def seed_blob_from_registry(input: SeedBlobInput) -> SeedBlobResult:
                     blob["digest"],
                     blobs_dir / blob["digest"].replace(":", "-"),
                     sem,
+                    on_bytes=_on_bytes,
                 )
                 for blob in all_blobs
             ]
@@ -158,6 +182,8 @@ async def seed_blob_from_registry(input: SeedBlobInput) -> SeedBlobResult:
                 raise ApplicationError(
                     f"Layer download failed for '{model_identifier}': {exc}"
                 ) from exc
+            if total_bytes > 0:
+                await update_download_progress(model_identifier, region, 100)
 
         # ── Archive ─────────────────────────────────────────────────────────────
         await update_upload_phase(model_identifier, region, "archiving")

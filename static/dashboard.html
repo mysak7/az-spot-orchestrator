@@ -1209,8 +1209,6 @@
       );
     }
 
-    const phaseWidths = { pulling: 25, archiving: 70, uploading: 90, copying: 50 };
-
     document.getElementById('cache-region-grid').innerHTML = _cacheRegions.map(region => {
       const e = byRegion[region];
       const isAvail   = e && e.status === 'available';
@@ -1221,16 +1219,19 @@
       const phase = e?.current_phase ?? '';
       const size  = e?.size_bytes ? ` · ${fmtBytes(e.size_bytes)}` : '';
       const dur   = e?.upload_duration_seconds ? ` · ${fmtDuration(e.upload_duration_seconds)}` : '';
+      const dlPct = e?.download_progress_pct ?? null;
+
+      // meta text: for pulling show "X%" label, others show phase name or status
       const meta  = !e       ? 'not cached'
                   : isFailed ? 'failed'
                   : isAvail  ? `available${size}${dur}`
+                  : phase === 'pulling' ? `pulling${dlPct !== null ? ` · ${dlPct}%` : ''}`
                   : phase    ? phase
                   : e.status;
 
-      const pct = isAvail ? 100 : isFailed ? 100 : (phaseWidths[phase] ?? 0);
-      const progCls = isAvail ? 'prog-done' : isFailed ? 'prog-fail' : 'prog-busy';
-      const bar = pct > 0
-        ? `<div class="rc-progress"><div class="rc-progress-bar ${progCls}" style="width:${pct}%"></div></div>`
+      // progress bar only during pulling, showing real download percentage
+      const bar = (phase === 'pulling' && !isAvail && !isFailed)
+        ? `<div class="rc-progress"><div class="rc-progress-bar prog-busy" style="width:${dlPct ?? 0}%"></div></div>`
         : '';
 
       return `

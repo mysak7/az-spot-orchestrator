@@ -321,6 +321,19 @@ async def mark_upload_started(model_identifier: str, region: str) -> None:
     logger.info("Marked upload started for %s in %s (phase=pulling)", model_identifier, region)
 
 
+async def update_download_progress(model_identifier: str, region: str, pct: int) -> None:
+    """Update download progress percentage (0-100) for a cache entry in pulling phase."""
+    container = get_cache_container()
+    entry_id = f"{_sanitize_identifier(model_identifier)}-{region}"
+    try:
+        item = await container.read_item(entry_id, partition_key=entry_id)
+        item["download_progress_pct"] = pct
+        item["updated_at"] = datetime.now(UTC).isoformat()
+        await container.upsert_item(item)
+    except Exception as e:
+        logger.warning("Failed to update download progress for %s in %s: %s", model_identifier, region, e)
+
+
 async def update_upload_phase(model_identifier: str, region: str, phase: str) -> None:
     """Update the current phase of an in-progress upload (pulling/archiving/uploading)."""
     container = get_cache_container()

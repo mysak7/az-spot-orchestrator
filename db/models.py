@@ -63,6 +63,7 @@ class ModelCacheEntry(BaseModel):
     size_bytes: int = 0
     status: Literal["uploading", "available", "failed"] = "uploading"
     current_phase: str | None = None  # "pulling" | "archiving" | "uploading" | None
+    download_progress_pct: int | None = None  # 0-100 during pulling phase
     upload_started_at: str
     upload_completed_at: str | None = None
     upload_duration_seconds: float | None = None
