@@ -1045,7 +1045,7 @@
       : entries;
 
     if (!filtered.length) {
-      tbody.innerHTML = `<tr class="empty-row"><td colspan="9">${_selectedCacheModel ? 'No blobs cached for this model yet' : 'No cached blobs yet — provision a VM to trigger the first upload'}</td></tr>`;
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="9">${_selectedCacheModel ? 'No blobs cached for this model yet' : 'No cached blobs yet'}</td></tr>`;
       return;
     }
 
@@ -1101,11 +1101,10 @@
     document.getElementById('cache-region-grid').innerHTML = _cacheRegions.map(region => {
       const e = byRegion[region];
       if (!e) {
-        const disabled = !hasSource ? 'disabled title="No source blob yet — provision a VM first"' : '';
-        return `
+          return `
           <div class="region-card">
             <label>
-              <input type="checkbox" ${disabled} onchange="toggleCacheRegion('${esc(region)}', this.checked)">
+              <input type="checkbox" onchange="toggleCacheRegion('${esc(region)}', this.checked)">
               <span class="rc-name">${esc(region)}</span>
               <span class="rc-meta">not cached</span>
             </label>
@@ -1168,11 +1167,9 @@
     const modelEntries = _cacheEntries.filter(e => e.model_identifier === _selectedCacheModel);
     const byRegion = {};
     modelEntries.forEach(e => { byRegion[e.region] = e; });
-    const hasSource = modelEntries.some(e => e.status === 'available');
 
     if (check) {
       // Check all uncached regions (skip busy/already cached)
-      if (!hasSource) { toast('No source blob yet — provision a VM first', 'error'); return; }
       const targets = _cacheRegions.filter(r => !byRegion[r]);
       if (!targets.length) { toast('All regions already cached', 'success'); return; }
       for (const region of targets) {
