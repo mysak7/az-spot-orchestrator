@@ -736,15 +736,21 @@
         <h2>Blob Cache</h2>
       </div>
 
-      <div class="filter-bar" style="margin-bottom:20px">
-        <select id="cache-model-select" onchange="onCacheModelChange()" style="min-width:220px">
+      <div style="margin-bottom:20px">
+        <select id="cache-model-select" onchange="onCacheModelChange()" style="width:100%;padding:8px 10px;font-size:14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-family:var(--font);outline:none;">
           <option value="">— select model —</option>
         </select>
       </div>
 
       <!-- Region spread panel — visible only when a model is selected -->
       <div id="cache-region-panel" class="card" style="display:none;margin-bottom:20px;padding:16px">
-        <div class="region-spread-header">Region distribution</div>
+        <div style="display:flex;align-items:center;margin-bottom:12px">
+          <div class="region-spread-header" style="margin-bottom:0">Region distribution</div>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button class="btn btn-ghost" style="font-size:12px;padding:3px 10px" onclick="toggleAllCacheRegions(true)">Check all</button>
+            <button class="btn btn-ghost" style="font-size:12px;padding:3px 10px" onclick="toggleAllCacheRegions(false)">Uncheck all</button>
+          </div>
+        </div>
         <div class="region-grid" id="cache-region-grid"></div>
       </div>
 
@@ -1156,6 +1162,48 @@
         refresh();
       }
     }
+  }
+
+  async function toggleAllCacheRegions(check) {
+    const modelEntries = _cacheEntries.filter(e => e.model_identifier === _selectedCacheModel);
+    const byRegion = {};
+    modelEntries.forEach(e => { byRegion[e.region] = e; });
+    const hasSource = modelEntries.some(e => e.status === 'available');
+
+    if (check) {
+      // Check all uncached regions (skip busy/already cached)
+      if (!hasSource) { toast('No source blob yet — provision a VM first', 'error'); return; }
+      const targets = _cacheRegions.filter(r => !byRegion[r]);
+      if (!targets.length) { toast('All regions already cached', 'success'); return; }
+      for (const region of targets) {
+        try {
+          await apiFetch('/api/storage/cache/copy', {
+            method: 'POST',
+            body: JSON.stringify({ model_identifier: _selectedCacheModel, target_region: region }),
+          });
+        } catch (err) {
+          toast(`Copy to ${region} failed: ${err.message}`, 'error');
+        }
+      }
+      toast(`Copy started for ${targets.length} region(s)`, 'success');
+    } else {
+      // Uncheck all — delete all available copies
+      const available = _cacheRegions.filter(r => byRegion[r] && byRegion[r].status === 'available');
+      if (!available.length) { toast('Nothing to remove', 'error'); return; }
+      if (!confirm(`Delete blobs from all ${available.length} region(s)?`)) return;
+      for (const region of available) {
+        try {
+          await apiFetch(
+            `/api/storage/cache/entry?model_identifier=${encodeURIComponent(_selectedCacheModel)}&region=${encodeURIComponent(region)}`,
+            { method: 'DELETE' }
+          );
+        } catch (err) {
+          toast(`Delete from ${region} failed: ${err.message}`, 'error');
+        }
+      }
+      toast(`Deleted from ${available.length} region(s)`, 'success');
+    }
+    refresh();
   }
 
   // ── Data loading ───────────────────────────────────────────────────────────
