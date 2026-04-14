@@ -31,7 +31,12 @@ class LLMModelResponse(BaseModel):
     size_mb: int
     model_identifier: str
     vm_size: str
+    keep_alive: bool = False
     created_at: str
+
+
+class LLMModelPatch(BaseModel):
+    keep_alive: bool
 
 
 # ── VM Instance ────────────────────────────────────────────────────────────────

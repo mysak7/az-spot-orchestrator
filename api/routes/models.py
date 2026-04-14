@@ -14,6 +14,7 @@ from db.cosmos import get_instances_container, get_models_container
 from db.models import LLMModel, VMInstance, VMStatus
 from schemas.api import (
     LLMModelCreate,
+    LLMModelPatch,
     LLMModelResponse,
     ProvisionRequest,
     ProvisionResponse,
@@ -68,6 +69,20 @@ async def get_model(model_id: str) -> LLMModelResponse:
         item = await container.read_item(item=model_id, partition_key=model_id)
     except ResourceNotFoundError:
         raise HTTPException(status_code=404, detail="Model not found")
+    return LLMModelResponse(**item)
+
+
+@router.patch("/models/{model_id}", response_model=LLMModelResponse)
+async def patch_model(model_id: str, payload: LLMModelPatch) -> LLMModelResponse:
+    """Update mutable fields on a registered model (currently: keep_alive)."""
+    container = get_models_container()
+    try:
+        item = await container.read_item(item=model_id, partition_key=model_id)
+    except ResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    item["keep_alive"] = payload.keep_alive
+    await container.replace_item(item=model_id, body=item)
     return LLMModelResponse(**item)
 
 

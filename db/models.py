@@ -36,6 +36,7 @@ class LLMModel(BaseModel):
     size_mb: int
     model_identifier: str  # Ollama tag, e.g. "llama3:8b"
     vm_size: str
+    keep_alive: bool = False  # if True, watchdog re-provisions whenever no active VM exists
     created_at: str = Field(default_factory=_now)
 
 

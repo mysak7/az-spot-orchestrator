@@ -629,6 +629,48 @@
   }
 
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Keep-alive toggle switch ── */
+  .toggle-wrap {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .toggle {
+    position: relative;
+    width: 32px;
+    height: 18px;
+    flex-shrink: 0;
+  }
+
+  .toggle input { opacity: 0; width: 0; height: 0; }
+
+  .toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: var(--gray);
+    border-radius: 18px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+
+  .toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    left: 3px;
+    top: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.2s;
+  }
+
+  .toggle input:checked + .toggle-slider { background: var(--green); }
+  .toggle input:checked + .toggle-slider::before { transform: translateX(14px); }
+
+  .toggle-label { font-size: 12px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -766,12 +808,14 @@
               <th>Size</th>
               <th>Ollama Tag</th>
               <th>VM SKU</th>
+              <th>VM Status</th>
+              <th>Keep Alive</th>
               <th>Registered</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody id="models-tbody">
-            <tr class="empty-row"><td colspan="7">Loading…</td></tr>
+            <tr class="empty-row"><td colspan="9">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1092,23 +1136,46 @@
   }
 
   // ── Render Models ──────────────────────────────────────────────────────────
+  const _VM_STATUS_PRIORITY = { running: 0, downloading: 1, provisioning: 2, pending: 3, evicted: 4, terminated: 5 };
+
+  function _activeVMStatus(modelId) {
+    // Find the most "alive" VM for this model
+    const relevant = _instancesAll.filter(i => i.model_id === modelId);
+    if (!relevant.length) return null;
+    relevant.sort((a, b) => (_VM_STATUS_PRIORITY[a.status] ?? 9) - (_VM_STATUS_PRIORITY[b.status] ?? 9));
+    return relevant[0].status;
+  }
+
   function renderModels(models) {
     _models = models;
     const tbody = document.getElementById('models-tbody');
     document.getElementById('nav-models-count').textContent = models.length;
 
     if (!models.length) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">No models registered yet</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="9">No models registered yet</td></tr>';
       return;
     }
 
-    tbody.innerHTML = models.map(m => `
+    tbody.innerHTML = models.map(m => {
+      const vmStatus = _activeVMStatus(m.id);
+      const statusCell = vmStatus
+        ? `<span class="badge badge-${vmStatus}">${vmStatus}</span>`
+        : `<span class="muted" style="font-size:12px">—</span>`;
+      const checked = m.keep_alive ? 'checked' : '';
+      return `
       <tr>
         <td><strong>${esc(m.name)}</strong></td>
         <td class="muted">${esc(m.description || '—')}</td>
         <td class="mono">${fmtSize(m.size_mb)}</td>
         <td class="mono">${esc(m.model_identifier)}</td>
         <td class="mono muted">${esc(m.vm_size)}</td>
+        <td>${statusCell}</td>
+        <td>
+          <label class="toggle" title="Keep LLM always alive — auto-provision if VM is gone">
+            <input type="checkbox" ${checked} onchange="toggleKeepAlive('${esc(m.id)}', this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </td>
         <td class="muted">${fmtDate(m.created_at)}</td>
         <td>
           <div class="actions">
@@ -1123,7 +1190,7 @@
           </div>
         </td>
       </tr>
-    `).join('');
+    `}).join('');
   }
 
   // ── Render Cache ───────────────────────────────────────────────────────────
@@ -1341,8 +1408,8 @@
         apiFetch('/api/instances'),
         apiFetch('/api/storage/cache'),
       ]);
+      renderInstances(instances);  // must run before renderModels so _instancesAll is populated
       renderModels(models);
-      renderInstances(instances);
       renderCache(cache);
       document.getElementById('refresh-label').textContent =
         'Updated ' + new Date().toLocaleTimeString();
@@ -1381,6 +1448,28 @@
       refresh();
     } catch (err) {
       toast(`Delete failed: ${err.message}`, 'error');
+    }
+  }
+
+  async function toggleKeepAlive(id, enabled) {
+    try {
+      await apiFetch(`/api/models/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ keep_alive: enabled }),
+      });
+      const m = _models.find(m => m.id === id);
+      const name = m ? m.name : id;
+      toast(
+        enabled
+          ? `Keep-alive enabled for "${name}" — watchdog will auto-provision if VM is gone`
+          : `Keep-alive disabled for "${name}"`,
+        'success',
+      );
+      // Update local state so re-render is consistent without a full refresh
+      if (m) m.keep_alive = enabled;
+    } catch (err) {
+      toast(`Keep-alive update failed: ${err.message}`, 'error');
+      refresh(); // re-render to revert the checkbox
     }
   }
 
