@@ -40,8 +40,11 @@ router = APIRouter()
 @router.get("/storage/cache", response_model=list[ModelCacheEntryResponse])
 async def list_cache() -> list[ModelCacheEntryResponse]:
     """List all cached models with metadata and statistics."""
-    entries = await list_cache_entries()
-    return [ModelCacheEntryResponse(**e.model_dump()) for e in entries]
+    try:
+        entries = await list_cache_entries()
+        return [ModelCacheEntryResponse(**e.model_dump()) for e in entries]
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
 
 @router.get("/storage/cache/source", response_model=CacheSourceResponse)
