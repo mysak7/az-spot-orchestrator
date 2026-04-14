@@ -20,6 +20,7 @@ from schemas.api import (
 )
 from services.model_cache import (
     delete_cache_entry,
+    find_best_copy_source,
     get_best_source,
     list_cache_entries,
     mark_upload_failed,
@@ -140,6 +141,13 @@ async def copy_blob(req: CopyBlobRequest, temporal: TemporalClient) -> dict:
     Uses Azure server-side copy from the nearest available source — no data
     leaves Azure's backbone.
     """
+    source_region = await find_best_copy_source(req.model_identifier, req.target_region)
+    if source_region is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"No available blob source for '{req.model_identifier}' — provision a VM first to create an initial cache entry",
+        )
+
     s = get_settings()
     safe_id = req.model_identifier.replace(":", "-").replace(".", "-")
     workflow_id = f"copy-{safe_id}-to-{req.target_region}-{uuid.uuid4().hex[:8]}"

@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 
+from azure.core.exceptions import AzureError
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
@@ -57,19 +58,31 @@ async def copy_blob_to_region(input: CopyBlobInput) -> CopyBlobResult:
             container=s.azure_storage_container_name,
             blob=target_blob_name,
         )
-        await target_client.start_copy_from_url(source_url)
+        try:
+            await target_client.start_copy_from_url(source_url)
+        except AzureError as exc:
+            raise ApplicationError(
+                f"Failed to start blob copy {input.model_identifier} → {input.target_region}: {exc}",
+                non_retryable=True,
+            ) from exc
 
         while True:
             activity.heartbeat(f"copying {input.model_identifier} → {input.target_region}")
             props = await target_client.get_blob_properties()
-            copy_status = props.copy.status  # type: ignore[union-attr]
+            copy_props = props.copy  # type: ignore[union-attr]
+            copy_status = copy_props.status if copy_props is not None else None
             if copy_status == "success":
                 size_bytes: int = props.size  # type: ignore[assignment]
                 break
             if copy_status in ("failed", "aborted"):
-                desc = getattr(props.copy, "status_description", copy_status)
+                desc = getattr(copy_props, "status_description", copy_status)
                 raise ApplicationError(
                     f"Blob copy {copy_status}: {desc}", non_retryable=True
+                )
+            if copy_status is None:
+                raise ApplicationError(
+                    f"Blob copy metadata unavailable for {target_blob_name} — copy may not have started",
+                    non_retryable=True,
                 )
             await asyncio.sleep(5)
 
