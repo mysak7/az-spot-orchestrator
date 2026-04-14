@@ -2,7 +2,12 @@ CONTROL_PLANE_IP ?= $(shell cd terraform && terraform output -raw control_plane_
 SSH_USER         ?= azureuser
 API_URL          ?= http://$(CONTROL_PLANE_IP)
 
-.PHONY: setup deploy oidc-setup model-register model-provision model-status help
+.PHONY: dev setup deploy oidc-setup model-register model-provision model-status help
+
+## Start all control-plane services locally (Temporal + API + Worker)
+dev:
+	@chmod +x scripts/start-dev.sh
+	@./scripts/start-dev.sh
 
 ## Wire GitHub Actions → Azure OIDC trust (run once after terraform init)
 ## Creates App Registration, federated credential, role assignments, and sets
