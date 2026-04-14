@@ -26,6 +26,7 @@ services:
       - "8080:8080"   # Temporal UI
     volumes:
       - temporal_data:/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "temporal", "workflow", "list", "--address", "localhost:7233"]
       interval: 10s
@@ -46,6 +47,7 @@ services:
       TEMPORAL_HOST: temporal:7233
     ports:
       - "80:8000"
+    restart: unless-stopped
 
   # ── Temporal Worker ──────────────────────────────────────────────────────────
   worker:
@@ -58,6 +60,7 @@ services:
     env_file: .env
     environment:
       TEMPORAL_HOST: temporal:7233
+    restart: unless-stopped
 
 volumes:
   temporal_data:

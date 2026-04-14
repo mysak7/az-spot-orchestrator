@@ -2,12 +2,7 @@ CONTROL_PLANE_IP ?= $(shell cd terraform && terraform output -raw control_plane_
 SSH_USER         ?= azureuser
 API_URL          ?= http://$(CONTROL_PLANE_IP)
 
-.PHONY: dev setup deploy oidc-setup model-register model-provision model-status help
-
-## Start all control-plane services locally (Temporal + API + Worker)
-dev:
-	@chmod +x scripts/start-dev.sh
-	@./scripts/start-dev.sh
+.PHONY: setup deploy start stop oidc-setup model-register model-provision model-status help
 
 ## Wire GitHub Actions → Azure OIDC trust (run once after terraform init)
 ## Creates App Registration, federated credential, role assignments, and sets
@@ -37,6 +32,18 @@ oidc-setup:
 setup:
 	@chmod +x scripts/setup-env.sh
 	@./scripts/setup-env.sh
+
+## Start services on the VM without redeploying (docker compose up -d)
+start:
+	ssh $(SSH_USER)@$(CONTROL_PLANE_IP) \
+	  "cd ~/az-spot-orchestrator && docker compose up -d"
+	@echo "Control plane: $(API_URL)"
+	@echo "Temporal UI:   http://$(CONTROL_PLANE_IP):8080"
+
+## Stop services on the VM
+stop:
+	ssh $(SSH_USER)@$(CONTROL_PLANE_IP) \
+	  "cd ~/az-spot-orchestrator && docker compose down"
 
 ## Copy repo + .env to the control-plane VM and start docker compose
 deploy:
