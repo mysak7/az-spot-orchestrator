@@ -11,7 +11,7 @@ with workflow.unsafe.imports_passed_through():
     from temporal.activities.seed_blob import seed_blob_from_registry
     from temporal.types import SeedBlobInput, SeedBlobResult
 
-_RETRY = RetryPolicy(maximum_attempts=2, initial_interval=timedelta(seconds=30))
+_RETRY = RetryPolicy(maximum_attempts=5, initial_interval=timedelta(seconds=30))
 
 
 @workflow.defn
