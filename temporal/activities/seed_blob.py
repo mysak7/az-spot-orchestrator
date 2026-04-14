@@ -24,6 +24,7 @@ from config import get_settings
 from services.blob_client import blob_service_client
 from services.model_cache import (
     _blob_name,
+    mark_upload_failed,
     mark_upload_started,
     register_upload_complete,
     update_upload_phase,
@@ -33,32 +34,14 @@ from temporal.types import SeedBlobInput, SeedBlobResult
 logger = logging.getLogger(__name__)
 
 _REGISTRY = "https://registry.ollama.ai"
-_AUTH_URL = "https://ollama.ai/v2/auth"
 _DOWNLOAD_CONCURRENCY = 4
 
 
-async def _get_token(client: httpx.AsyncClient, name: str) -> str:
-    """Obtain a Bearer token from the Ollama auth service."""
-    resp = await client.get(
-        _AUTH_URL,
-        params={
-            "service": "registry.ollama.ai",
-            "scope": f"repository:library/{name}:pull",
-        },
-    )
-    resp.raise_for_status()
-    return resp.json()["token"]
-
-
-async def _fetch_manifest(
-    client: httpx.AsyncClient, name: str, tag: str, token: str
-) -> dict:
+async def _fetch_manifest(client: httpx.AsyncClient, name: str, tag: str) -> dict:
+    """Fetch model manifest from the Ollama registry (no auth required)."""
     resp = await client.get(
         f"{_REGISTRY}/v2/library/{name}/manifests/{tag}",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.docker.distribution.manifest.v2+json",
-        },
+        headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json"},
     )
     resp.raise_for_status()
     return resp.json()
@@ -68,7 +51,6 @@ async def _download_layer(
     client: httpx.AsyncClient,
     name: str,
     digest: str,
-    token: str,
     dest: Path,
     sem: asyncio.Semaphore,
 ) -> None:
@@ -78,7 +60,6 @@ async def _download_layer(
         async with client.stream(
             "GET",
             f"{_REGISTRY}/v2/library/{name}/blobs/{digest}",
-            headers={"Authorization": f"Bearer {token}"},
         ) as resp:
             resp.raise_for_status()
             with dest.open("wb") as fh:
@@ -130,25 +111,14 @@ async def seed_blob_from_registry(input: SeedBlobInput) -> SeedBlobResult:
 
     s = get_settings()
     await mark_upload_started(model_identifier, region)
-    await update_upload_phase(model_identifier, region, "pulling")
 
     tmpdir = Path(tempfile.mkdtemp(prefix="ollama_seed_"))
     try:
         async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as http:
-            # ── Auth ────────────────────────────────────────────────────────────
-            activity.heartbeat("authenticating with Ollama registry")
-            try:
-                token = await _get_token(http, name)
-            except Exception as exc:
-                raise ApplicationError(
-                    f"Ollama registry auth failed for '{name}': {exc}",
-                    non_retryable=True,
-                ) from exc
-
             # ── Manifest ────────────────────────────────────────────────────────
             activity.heartbeat("fetching manifest")
             try:
-                manifest = await _fetch_manifest(http, name, tag, token)
+                manifest = await _fetch_manifest(http, name, tag)
             except httpx.HTTPStatusError as exc:
                 raise ApplicationError(
                     f"Manifest not found for '{model_identifier}' "
@@ -177,7 +147,6 @@ async def seed_blob_from_registry(input: SeedBlobInput) -> SeedBlobResult:
                     http,
                     name,
                     blob["digest"],
-                    token,
                     blobs_dir / blob["digest"].replace(":", "-"),
                     sem,
                 )
@@ -224,5 +193,8 @@ async def seed_blob_from_registry(input: SeedBlobInput) -> SeedBlobResult:
             duration_seconds=duration,
         )
 
+    except Exception:
+        await mark_upload_failed(model_identifier, region)
+        raise
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
