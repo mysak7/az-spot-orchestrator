@@ -37,6 +37,19 @@ async def main():
             "model_identifier": "llama3:8b",
             "vm_size": "Standard_NC4as_T4_v3",
         }
+
+        # Register Qwen3 32B — best Qwen model fitting in 32 GB VRAM (Q4_K_M ~20 GB)
+        print("\n[2b] Register Qwen3 32B Model")
+        qwen_payload = {
+            "name": "qwen3-32b",
+            "description": "Qwen3 32B — best Qwen model fitting within 32 GB VRAM (Q4_K_M ~20 GB)",
+            "size_mb": 20000,
+            "model_identifier": "qwen3:32b",
+            "vm_size": "Standard_NC12s_v3",  # 2× V100 16 GB = 32 GB total VRAM
+        }
+        resp_qwen = await client.post(f"{BASE_URL}/api/models", json=qwen_payload)
+        print(f"Status: {resp_qwen.status_code}")
+        print(f"Response: {json.dumps(resp_qwen.json(), indent=2)}")
         resp = await client.post(f"{BASE_URL}/api/models", json=model_payload)
         print(f"Status: {resp.status_code}")
         model_data = resp.json()
