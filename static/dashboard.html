@@ -1452,21 +1452,38 @@
   }
 
   async function toggleKeepAlive(id, enabled) {
+    const m = _models.find(m => m.id === id);
+    const name = m ? m.name : id;
     try {
       await apiFetch(`/api/models/${id}`, {
         method: 'PATCH',
         body: JSON.stringify({ keep_alive: enabled }),
       });
-      const m = _models.find(m => m.id === id);
-      const name = m ? m.name : id;
-      toast(
-        enabled
-          ? `Keep-alive enabled for "${name}" — watchdog will auto-provision if VM is gone`
-          : `Keep-alive disabled for "${name}"`,
-        'success',
-      );
-      // Update local state so re-render is consistent without a full refresh
       if (m) m.keep_alive = enabled;
+
+      if (enabled) {
+        // Check if there is no active VM right now — if so, provision immediately
+        const activeStatus = _activeVMStatus(id);
+        const isActive = activeStatus && !['evicted', 'terminated'].includes(activeStatus);
+        if (!isActive) {
+          toast(`Keep-alive enabled for "${name}" — provisioning now…`, 'success');
+          const res = await apiFetch(`/api/models/${id}/provision`, { method: 'POST', body: '{}' });
+          _trackJob({
+            workflow_id: res.workflow_id,
+            vm_name: res.vm_name,
+            vm_size: m?.vm_size || '—',
+            region: null,
+            status: 'provisioning',
+            model_name: name,
+          });
+          navigate('vms');
+          refresh();
+        } else {
+          toast(`Keep-alive enabled for "${name}" — VM already ${activeStatus}`, 'success');
+        }
+      } else {
+        toast(`Keep-alive disabled for "${name}"`, 'success');
+      }
     } catch (err) {
       toast(`Keep-alive update failed: ${err.message}`, 'error');
       refresh(); // re-render to revert the checkbox
