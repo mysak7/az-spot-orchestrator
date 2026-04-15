@@ -1297,7 +1297,8 @@
 
   function renderInstances(instances) {
     _instancesAll = instances;
-    document.getElementById('nav-vms-count').textContent = instances.length;
+    const runningCount = instances.filter(i => !['terminated', 'evicted', 'failed'].includes(i.status)).length;
+    document.getElementById('nav-vms-count').textContent = runningCount;
     _applyInstanceFilters();
   }
 
