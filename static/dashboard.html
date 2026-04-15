@@ -2280,18 +2280,32 @@
   }
 
   // ── Launch Bare VM ─────────────────────────────────────────────────────────
-  const _JOBS_KEY = 'az-spot-jobs-v1';
-  let _activeJobs = {}; // workflow_id → job obj
+  const _JOBS_KEY      = 'az-spot-jobs-v1';
+  const _DISMISSED_KEY = 'az-spot-dismissed-v1';
+  let _activeJobs   = {}; // workflow_id → job obj
+  let _dismissedIds = new Set(); // workflow_ids permanently hidden
 
   function _persistJobs() {
     try { localStorage.setItem(_JOBS_KEY, JSON.stringify(_activeJobs)); } catch (_) {}
   }
 
+  function _persistDismissed() {
+    try { localStorage.setItem(_DISMISSED_KEY, JSON.stringify([..._dismissedIds])); } catch (_) {}
+  }
+
   function _restoreJobs() {
+    try {
+      const rawD = localStorage.getItem(_DISMISSED_KEY);
+      if (rawD) _dismissedIds = new Set(JSON.parse(rawD));
+    } catch (_) {}
     try {
       const raw = localStorage.getItem(_JOBS_KEY);
       if (!raw) return;
-      _activeJobs = JSON.parse(raw);
+      const all = JSON.parse(raw);
+      // Drop any jobs the user already dismissed (guards against multi-tab races)
+      for (const wfId of _dismissedIds) delete all[wfId];
+      _activeJobs = all;
+      _persistJobs(); // write back the pruned state
       _renderJobs();
       // Resume polling for any jobs that were still in-flight
       for (const [wfId, job] of Object.entries(_activeJobs)) {
@@ -2339,6 +2353,7 @@
   }
 
   function _trackJob(job) {
+    if (_dismissedIds.has(job.workflow_id)) return; // never re-add dismissed jobs
     _activeJobs[job.workflow_id] = {
       ...job,
       started_at: Date.now(),
@@ -2450,6 +2465,8 @@
       if (!job || job.status === 'running' || job.status === 'failed' || job.status === 'cancelled') break;
       try {
         const res = await apiFetch(`/api/inventory/bare-vms/${encodeURIComponent(workflowId)}`);
+        // Job may have been dismissed while the fetch was in flight
+        if (!_activeJobs[workflowId]) break;
         consecutiveErrors = 0;
         pollInterval = 3000;
 
@@ -2504,6 +2521,8 @@
   }
 
   function dismissJob(workflowId) {
+    _dismissedIds.add(workflowId);
+    _persistDismissed();
     delete _activeJobs[workflowId];
     _persistJobs();
     _renderJobs();
@@ -2515,12 +2534,15 @@
       await apiFetch(`/api/inventory/bare-vms/${encodeURIComponent(workflowId)}`, { method: 'DELETE' });
       _addLog(workflowId, 'Workflow cancelled.', 'warn');
       _activeJobs[workflowId] = { ..._activeJobs[workflowId], status: 'cancelled' };
+      _persistJobs();
+      _renderJobs();
     } catch (err) {
       _addLog(workflowId, `Kill failed: ${err.message}`, 'error');
       _activeJobs[workflowId] = { ..._activeJobs[workflowId], status: 'failed', error: err.message };
+      _persistJobs();
+      _renderJobs();
     }
-    _persistJobs();
-    _renderJobs();
+    // After kill, user still needs to Dismiss — don't auto-tombstone here
   }
 
   // ── Messages ───────────────────────────────────────────────────────────────
