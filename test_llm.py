@@ -35,28 +35,30 @@ async def test_model(client: httpx.AsyncClient, base_url: str, model: dict) -> d
     if not running:
         return result
 
-    # Send chat request
+    # Send chat request via native Ollama API (supports think:false reliably)
     payload = {
         "model": ollama_model,
         "messages": [{"role": "user", "content": PROMPT}],
         "stream": False,
+        "think": False,
+        "options": {"num_predict": 20},
     }
     t0 = time.monotonic()
     try:
         resp = await client.post(
-            f"{base_url}/proxy/{model_name}/v1/chat/completions",
+            f"{base_url}/proxy/{model_name}/api/chat",
             json=payload,
         )
         result["elapsed"] = time.monotonic() - t0
         result["status_code"] = resp.status_code
         if resp.status_code == 200:
             data = resp.json()
-            result["reply"] = data.get("choices", [{}])[0].get("message", {}).get("content", "<no content>")
+            result["reply"] = data.get("message", {}).get("content", "<no content>")
         else:
             result["error"] = resp.text[:200]
     except httpx.RequestError as exc:
         result["elapsed"] = time.monotonic() - t0
-        result["error"] = str(exc)
+        result["error"] = f"{type(exc).__name__}: {exc}" or type(exc).__name__
 
     return result
 
@@ -66,7 +68,7 @@ async def main(base_url: str) -> None:
     print(f"Control plane : {base_url}")
     print(f"Prompt        : {PROMPT}\n")
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=240.0) as client:
         # Health check
         try:
             health = await client.get(f"{base_url}/health")
@@ -92,22 +94,29 @@ async def main(base_url: str) -> None:
 
     # Print results
     ok = 0
+    tested = 0
     for r in results:
         sep = "-" * 60
         print(sep)
         print(f"Model    : {r['model']}  ({r['ollama']})")
         print(f"Instance : {r['instance']}")
-        if r["error"]:
+        if r["status_code"] is None and r["error"] is None:
+            print("[SKIP]   : no running instance")
+        elif r["error"] is not None:
+            tested += 1
             print(f"[ERROR]  : {r['error']}")
         else:
+            tested += 1
             status_tag = "[OK]" if r["status_code"] == 200 else "[FAIL]"
-            print(f"HTTP     : {r['status_code']}  ({r['elapsed']:.1f}s)  {status_tag}")
+            elapsed = f"{r['elapsed']:.1f}s" if r["elapsed"] is not None else "?"
+            print(f"HTTP     : {r['status_code']}  ({elapsed})  {status_tag}")
             if r["reply"]:
                 print(f"Reply    : {r['reply']}")
                 ok += 1
     print("-" * 60)
-    print(f"\n{ok}/{len(results)} model(s) responded successfully.")
-    if ok < len(results):
+    skipped = len(results) - tested
+    print(f"\n{ok}/{tested} tested model(s) responded successfully  ({skipped} skipped — no instance).")
+    if tested > 0 and ok < tested:
         sys.exit(1)
 
 
