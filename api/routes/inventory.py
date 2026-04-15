@@ -136,8 +136,8 @@ async def _fetch_region(client: httpx.AsyncClient, region: str) -> list[dict]:
 
 async def _fetch_subscription_available(
     candidate_regions: list[str],
-) -> tuple[dict[str, set[str]], dict[str, int], dict[str, str]]:
-    """Return (available, vcpu_counts, vm_family_map) for VM sizes with no subscription restrictions.
+) -> tuple[dict[str, set[str]], dict[str, int], dict[str, str], dict[str, float]]:
+    """Return (available, vcpu_counts, vm_family_map, memory_gb_map) for VM sizes with no subscription restrictions.
 
     available: {region → set of lower-cased vm_size strings} — sizes that pass
       the per-region SKU restriction check (NotAvailableForSubscription / QuotaId).
@@ -145,8 +145,9 @@ async def _fetch_subscription_available(
     vm_family_map: {lower-cased vm_size → family_lp_key} e.g.
       "standard_nc4as_t4_v3" → "standardncasv3_t4familylowprioritycores" used to
       cross-reference family-level low-priority quota from the usage API.
+    memory_gb_map: {lower-cased vm_size → memory in GB} from SKU MemoryGB capability.
 
-    On any error returns ({}, {}, {}) so the caller skips the filter rather than
+    On any error returns ({}, {}, {}, {}) so the caller skips the filter rather than
     showing a blank page.
     """
     from services.azure_client import compute_client
@@ -155,6 +156,7 @@ async def _fetch_subscription_available(
     region_set_lower = {r.lower(): r for r in candidate_regions}
     vcpu_counts: dict[str, int] = {}
     vm_family_map: dict[str, str] = {}
+    memory_gb_map: dict[str, float] = {}
 
     try:
         async with compute_client() as comp:
@@ -168,12 +170,17 @@ async def _fetch_subscription_available(
                 if not vm_size_lower:
                     continue
 
-                # Collect vCPU count and Family once per vm_size from SKU capabilities
+                # Collect vCPU count, MemoryGB, and Family once per vm_size from SKU capabilities
                 if vm_size_lower not in vcpu_counts or vm_size_lower not in vm_family_map:
                     for cap in sku.capabilities or []:
                         if cap.name == "vCPUs" and vm_size_lower not in vcpu_counts:
                             try:
                                 vcpu_counts[vm_size_lower] = int(cap.value or 0)
+                            except (TypeError, ValueError):
+                                pass
+                        elif cap.name == "MemoryGB" and vm_size_lower not in memory_gb_map:
+                            try:
+                                memory_gb_map[vm_size_lower] = float(cap.value or 0)
                             except (TypeError, ValueError):
                                 pass
                         elif cap.name == "Family" and vm_size_lower not in vm_family_map:
@@ -208,9 +215,9 @@ async def _fetch_subscription_available(
         logger.warning(
             "Subscription SKU check failed — showing all priced VMs: %s", exc
         )
-        return {}, {}, {}
+        return {}, {}, {}, {}
 
-    return available, vcpu_counts, vm_family_map
+    return available, vcpu_counts, vm_family_map, memory_gb_map
 
 
 async def _fetch_lp_cores_limit(candidate_regions: list[str]) -> dict[str, int]:
@@ -276,6 +283,7 @@ def _build_inventory(
     available_skus: dict[str, set[str]],
     vcpu_counts: dict[str, int],
     lp_cores_limit: dict[str, int] | None = None,
+    memory_gb_map: dict[str, float] | None = None,
 ) -> dict:
     """Build the inventory dict from raw price rows.
 
@@ -285,6 +293,7 @@ def _build_inventory(
       where vcpu_count > limit are excluded — catches GPU VMs on PAYG subs where the
       limit (e.g. 3) is lower than the smallest GPU VM (e.g. NC4as_T4_v3 = 4 vCPUs).
       None means the API failed — quota filter is skipped entirely.
+    memory_gb_map: {vm_size_lower → memory in GB} from SKU capabilities.
 
     The SKU filter is skipped when unavailable so the page still shows
     something useful on API errors.
@@ -322,17 +331,27 @@ def _build_inventory(
         if region not in bucket or price < bucket[region]:
             bucket[region] = price
 
+    _HOURS_PER_MONTH = 24 * 30
+
     items = []
     for vm_size, region_prices in pricing.items():
         gpu = _gpu_label(vm_size)
         sorted_regions = sorted(region_prices.items(), key=lambda x: x[1])
+        best_price = round(sorted_regions[0][1], 5) if sorted_regions else None
+        vm_size_lower = vm_size.lower()
+        vcpus: int | None = vcpu_counts.get(vm_size_lower) or None
+        mem_gb: float | None = (memory_gb_map or {}).get(vm_size_lower) or None
+        monthly = round(best_price * _HOURS_PER_MONTH, 2) if best_price is not None else None
         items.append({
             "vm_size": vm_size,
             "family": _family(vm_size),
             "gpu": gpu,
+            "vcpus": vcpus,
+            "memory_gb": mem_gb,
             "regions": [{"region": r, "price_usd": round(p, 5)} for r, p in sorted_regions],
-            "best_price_usd": round(sorted_regions[0][1], 5) if sorted_regions else None,
+            "best_price_usd": best_price,
             "best_region": sorted_regions[0][0] if sorted_regions else None,
+            "monthly_price_usd": monthly,
             "subscription_verified": not skip_sku_filter,
         })
 
@@ -365,12 +384,12 @@ async def get_spot_inventory(
             from config import get_settings
             regions = list(get_settings().azure_candidate_regions)
             # Fetch prices, SKU availability, and LP quota in parallel
-            rows, (available_skus, vcpu_counts, _), lp_cores_limit = await asyncio.gather(
+            rows, (available_skus, vcpu_counts, _, memory_gb_map), lp_cores_limit = await asyncio.gather(
                 _fetch_raw_spot_prices(regions),
                 _fetch_subscription_available(regions),
                 _fetch_lp_cores_limit(regions),
             )
-            payload = _build_inventory(rows, available_skus, vcpu_counts, lp_cores_limit)
+            payload = _build_inventory(rows, available_skus, vcpu_counts, lp_cores_limit, memory_gb_map)
             _cache = (now, payload)
         except Exception as exc:
             logger.error("Failed to fetch Spot prices: %s", exc)

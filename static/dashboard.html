@@ -1675,11 +1675,14 @@
   let _sortDir = 1; // 1=asc, -1=desc
 
   function _sortValue(item, col) {
-    if (col === 'best_price_usd') return item.best_price_usd ?? 9999;
+    if (col === 'best_price_usd')   return item.best_price_usd ?? 9999;
+    if (col === 'monthly_price_usd') return item.monthly_price_usd ?? 9999;
     if (col === 'vm_size')  return item.vm_size.toLowerCase();
     if (col === 'family')   return item.family.toLowerCase();
     if (col === 'gpu')      return item.gpu ? item.gpu.toLowerCase() : 'zzz';
     if (col === 'best_region') return item.best_region ?? 'zzz';
+    if (col === 'vcpus')    return item.vcpus ?? 9999;
+    if (col === 'memory_gb') return item.memory_gb ?? 9999;
     return '';
   }
 
@@ -1742,11 +1745,18 @@
       const extraCount = i.regions.length - 1;
       const moreLabel = extraCount > 0 ? `+${extraCount} more` : '';
 
+      const vcpuStr = i.vcpus != null ? i.vcpus : '—';
+      const memStr  = i.memory_gb != null ? (Number.isInteger(i.memory_gb) ? i.memory_gb : i.memory_gb.toFixed(1)) + ' GB' : '—';
+      const monthlyStr = i.monthly_price_usd != null ? `~$${i.monthly_price_usd.toFixed(0)}/mo` : '—';
+
       return `<tr>
         <td class="mono" style="font-weight:600">${esc(i.vm_size)}</td>
         <td class="mono muted">${esc(i.family)}</td>
         <td>${gpuTag}</td>
+        <td class="mono muted" style="text-align:right">${vcpuStr}</td>
+        <td class="mono muted" style="text-align:right">${memStr}</td>
         <td class="mono" style="color:var(--green);font-weight:600">$${i.best_price_usd != null ? i.best_price_usd.toFixed(4) : '—'}/hr</td>
+        <td class="mono muted">${monthlyStr}</td>
         <td class="mono muted">${esc(i.best_region || '—')}</td>
         <td>
           ${moreLabel ? `<button class="regions-toggle" onclick="toggleRegions(this)">▶ ${moreLabel}</button>
@@ -1774,7 +1784,10 @@
             ${thSort('vm_size','VM Size')}
             ${thSort('family','Family')}
             ${thSort('gpu','GPU')}
+            ${thSort('vcpus','vCPUs')}
+            ${thSort('memory_gb','RAM')}
             ${thSort('best_price_usd','Best Price')}
+            ${thSort('monthly_price_usd','~Monthly')}
             ${thSort('best_region','Best Region')}
             <th>Other Regions</th>
             <th></th>
