@@ -1277,12 +1277,15 @@
     const byRegion = {};
     modelEntries.forEach(e => { byRegion[e.region] = e; });
 
-    // Initialise pending state when the model changes
+    // Initialise pending state when the model changes.
+    // If nothing is cached yet, pre-check the control-plane region so it seeds
+    // there first by default.
     if (_pendingModelForRegions !== _selectedCacheModel) {
       _pendingModelForRegions = _selectedCacheModel;
-      _pendingRegions = new Set(
-        _cacheRegions.filter(r => byRegion[r] && byRegion[r].status !== 'failed')
-      );
+      const hasAnyAvailable = Object.values(byRegion).some(e => e.status !== 'failed');
+      _pendingRegions = hasAnyAvailable
+        ? new Set(_cacheRegions.filter(r => byRegion[r] && byRegion[r].status !== 'failed'))
+        : _controlPlaneRegion ? new Set([_controlPlaneRegion]) : new Set();
     }
 
     const hasAnySource = _cacheEntries.some(

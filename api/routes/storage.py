@@ -61,8 +61,17 @@ async def get_cache_source(
 
 @router.get("/storage/regions", response_model=list[str])
 async def list_regions() -> list[str]:
-    """Return the candidate Azure regions used for Spot VM provisioning."""
-    return get_settings().azure_candidate_regions
+    """Return regions available for blob caching.
+
+    The control-plane region is always first so it appears at the top of the
+    dashboard grid and is the natural first seed target.
+    """
+    s = get_settings()
+    regions = list(s.azure_candidate_regions)
+    ctrl = s.control_plane_region
+    if ctrl in regions:
+        regions.remove(ctrl)
+    return [ctrl] + regions
 
 
 @router.get("/storage/control-region", response_model=str)
