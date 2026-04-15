@@ -17,6 +17,7 @@ Data flow (all running concurrently):
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import io
 import json
 import logging
@@ -87,7 +88,12 @@ async def _stream_to_blob(
 
     class _UploadWriter(io.RawIOBase):
         def write(self, b: bytes) -> int:  # type: ignore[override]
-            asyncio.run_coroutine_threadsafe(upload_q.put(bytes(b)), loop).result()
+            f = asyncio.run_coroutine_threadsafe(upload_q.put(bytes(b)), loop)
+            try:
+                f.result(timeout=60.0)
+            except concurrent.futures.TimeoutError:
+                # upload_task has likely failed and stopped consuming the queue
+                raise IOError("upload queue stalled — blob upload task may have failed")
             return len(b)
 
         def writable(self) -> bool:
