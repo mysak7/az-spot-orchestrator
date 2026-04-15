@@ -779,12 +779,13 @@
               <th class="sortable" onclick="sortInstances('status')">Status</th>
               <th class="sortable" onclick="sortInstances('region')">Region</th>
               <th>IP Address</th>
+              <th>VM SKU</th>
               <th>Workflow</th>
               <th class="sortable" onclick="sortInstances('updated_at')">Last Updated</th>
             </tr>
           </thead>
           <tbody id="instances-tbody">
-            <tr class="empty-row"><td colspan="7">Loading…</td></tr>
+            <tr class="empty-row"><td colspan="8">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1168,11 +1169,25 @@
       const msg = _instancesAll.length
         ? 'No instances match the current filters'
         : 'No VM instances yet — provision a model to get started';
-      tbody.innerHTML = `<tr class="empty-row"><td colspan="7">${msg}</td></tr>`;
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="8">${msg}</td></tr>`;
       return;
     }
 
-    tbody.innerHTML = items.map(i => `
+    tbody.innerHTML = items.map(i => {
+      // Look up vm_size from the model catalog, then enrich with SKU info
+      const model = _models.find(m => m.id === i.model_id);
+      const vmSize = model ? model.vm_size : null;
+      const skuCell = (() => {
+        if (!vmSize) return '<span class="muted">—</span>';
+        const sku = _skuMap[(vmSize).toLowerCase()] || {};
+        const cpuStr = sku.vcpus != null ? `${sku.vcpus} vCPU` : null;
+        const memStr = sku.memory_gb != null ? `${Number.isInteger(sku.memory_gb) ? sku.memory_gb : sku.memory_gb.toFixed(0)} GB` : null;
+        const invItem = _invData && _invData.items ? _invData.items.find(x => x.vm_size.toLowerCase() === vmSize.toLowerCase()) : null;
+        const priceStr = invItem && invItem.monthly_price_usd != null ? `~$${invItem.monthly_price_usd.toFixed(0)}/mo` : null;
+        const sub = [cpuStr, memStr, priceStr].filter(Boolean).join(' · ');
+        return `<span class="mono" style="font-size:12px">${esc(vmSize)}</span>${sub ? `<br><span style="font-size:11px;color:var(--muted)">${sub}</span>` : ''}`;
+      })();
+      return `
       <tr>
         <td class="mono">${esc(i.vm_name)}</td>
         <td><strong>${esc(i.model_name)}</strong></td>
@@ -1182,13 +1197,14 @@
           ? `<a href="http://${esc(i.ip_address)}:11434" target="_blank" style="color:var(--blue);text-decoration:none">${esc(i.ip_address)}</a>`
           : '<span class="muted">—</span>'
         }</td>
+        <td>${skuCell}</td>
         <td class="mono muted" style="font-size:11px">${i.workflow_id
           ? `<a href="http://localhost:8080/namespaces/default/workflows/${esc(i.workflow_id)}" target="_blank" style="color:var(--blue);text-decoration:none">${esc(i.workflow_id.slice(0, 28))}…</a>`
           : '—'
         }</td>
         <td class="muted">${fmtDate(i.updated_at)}</td>
       </tr>
-    `).join('');
+    `}).join('');
   }
 
   // ── Render Models ──────────────────────────────────────────────────────────
