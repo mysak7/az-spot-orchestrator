@@ -12,7 +12,7 @@ import time
 
 import httpx
 
-DEFAULT_BASE_URL = "http://74.241.243.18"
+DEFAULT_BASE_URL = "http://135.225.121.221"
 PROMPT = "In one sentence, what is the capital of France?"
 
 
