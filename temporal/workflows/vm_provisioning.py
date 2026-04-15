@@ -133,20 +133,18 @@ class ProvisionVMWorkflow:
                         input.vm_size,
                         candidate,
                     )
-                    # Compute next region before cleanup so memo is set when
-                    # delete_azure_vm runs (visible in live status polling).
                     next_regions = regions[regions.index(candidate) + 1:]
                     next_region = next_regions[0] if next_regions else None
                     workflow.upsert_memo({"failover_from": candidate, "failover_to": next_region or ""})
-                    # Clean up partial resources before trying next region
-                    await workflow.execute_activity(
-                        delete_azure_vm,
+                    # Fire-and-forget cleanup — don't block the next provision attempt.
+                    await workflow.start_child_workflow(
+                        DeleteVMWorkflow.run,
                         DeleteAzureVMInput(
                             vm_name=input.vm_name,
                             resource_group=input.resource_group,
                         ),
-                        start_to_close_timeout=timedelta(minutes=10),
-                        retry_policy=_FAST_RETRY,
+                        id=f"cleanup-{input.vm_name}-{candidate}",
+                        parent_close_policy=workflow.ParentClosePolicy.ABANDON,
                     )
                     # Emit a warning message with price comparison
                     failed_price = region_prices.get(candidate)
@@ -179,15 +177,15 @@ class ProvisionVMWorkflow:
                     )
                     last_error = exc
                     continue
-                # Non-capacity failure: clean up and abort
-                await workflow.execute_activity(
-                    delete_azure_vm,
+                # Non-capacity failure: fire-and-forget cleanup then abort
+                await workflow.start_child_workflow(
+                    DeleteVMWorkflow.run,
                     DeleteAzureVMInput(
                         vm_name=input.vm_name,
                         resource_group=input.resource_group,
                     ),
-                    start_to_close_timeout=timedelta(minutes=10),
-                    retry_policy=_FAST_RETRY,
+                    id=f"cleanup-{input.vm_name}-{candidate}-err",
+                    parent_close_policy=workflow.ParentClosePolicy.ABANDON,
                 )
                 await workflow.execute_activity(
                     update_vm_status,
@@ -321,19 +319,18 @@ class LaunchBareVMWorkflow:
                         input.vm_size,
                         candidate,
                     )
-                    # Compute next region before cleanup so memo is set when
-                    # delete_azure_vm runs (visible in live status polling).
                     next_regions = regions[regions.index(candidate) + 1:]
                     next_region = next_regions[0] if next_regions else None
                     workflow.upsert_memo({"failover_from": candidate, "failover_to": next_region or ""})
-                    await workflow.execute_activity(
-                        delete_azure_vm,
+                    # Fire-and-forget cleanup — don't block the next provision attempt.
+                    await workflow.start_child_workflow(
+                        DeleteVMWorkflow.run,
                         DeleteAzureVMInput(
                             vm_name=input.vm_name,
                             resource_group=input.resource_group,
                         ),
-                        start_to_close_timeout=timedelta(minutes=10),
-                        retry_policy=_FAST_RETRY,
+                        id=f"cleanup-{input.vm_name}-{candidate}",
+                        parent_close_policy=workflow.ParentClosePolicy.ABANDON,
                     )
                     # Emit a warning message with price comparison
                     failed_price = region_prices.get(candidate)
@@ -366,16 +363,15 @@ class LaunchBareVMWorkflow:
                     )
                     last_error = exc
                     continue
-                # Non-capacity failure — clean up then surface as ApplicationError
-                # so Temporal marks the workflow FAILED (not retries as task failure).
-                await workflow.execute_activity(
-                    delete_azure_vm,
+                # Non-capacity failure — fire-and-forget cleanup then surface as ApplicationError.
+                await workflow.start_child_workflow(
+                    DeleteVMWorkflow.run,
                     DeleteAzureVMInput(
                         vm_name=input.vm_name,
                         resource_group=input.resource_group,
                     ),
-                    start_to_close_timeout=timedelta(minutes=10),
-                    retry_policy=_FAST_RETRY,
+                    id=f"cleanup-{input.vm_name}-{candidate}-err",
+                    parent_close_policy=workflow.ParentClosePolicy.ABANDON,
                 )
                 await workflow.execute_activity(
                     update_vm_status,

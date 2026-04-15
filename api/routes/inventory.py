@@ -533,7 +533,6 @@ async def launch_bare_vm(body: LaunchBareVMRequest, request: FastAPIRequest) -> 
 _ACTIVITY_LABELS: dict[str, str] = {
     "get_cheapest_region": "Finding cheapest region...",
     "provision_azure_vm":  "Provisioning VM on Azure...",
-    "delete_azure_vm":     "Cleaning up, trying next region...",
     "update_vm_status":    "Updating status...",
     "wait_for_model_ready": "Waiting for model to load...",
 }
@@ -572,16 +571,14 @@ def _activity_info(pending: list, memo_fields: dict | None = None) -> dict | Non
     if lf:
         last_failure_msg = getattr(lf, "message", None) or str(lf)
 
-    # Build display label — enrich delete_azure_vm with region context from memo.
-    if name == "delete_azure_vm" and memo_fields:
+    # Build display label — enrich provision_azure_vm with failover context from memo.
+    if name == "provision_azure_vm" and memo_fields:
         failover_from = _decode_memo_str(memo_fields.get("failover_from"))
         failover_to = _decode_memo_str(memo_fields.get("failover_to"))
         if failover_from and failover_to:
-            display = f"Cleaning up {failover_from}, trying {failover_to}..."
-        elif failover_from:
-            display = f"Cleaning up {failover_from}..."
+            display = f"Provisioning VM in {failover_to} (cleaning up {failover_from} in background)..."
         else:
-            display = _ACTIVITY_LABELS["delete_azure_vm"]
+            display = _ACTIVITY_LABELS.get(name, name.replace("_", " ").title() + "...")
     else:
         display = _ACTIVITY_LABELS.get(name, name.replace("_", " ").title() + "...")
 
