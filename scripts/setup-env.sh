@@ -24,6 +24,7 @@ COSMOS_ENDPOINT=$(terraform output -raw cosmos_endpoint)
 COSMOS_KEY=$(terraform output -raw cosmos_primary_key)
 CONTROL_PLANE_IP=$(terraform output -raw control_plane_public_ip)
 RESOURCE_GROUP=$(terraform output -raw resource_group_name)
+STORAGE_ACCOUNT_NAME=$(terraform output -raw storage_account_name 2>/dev/null || echo "azspotmodelcache")
 
 echo "==> Reading Azure account info..."
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
@@ -72,10 +73,14 @@ TEMPORAL_NAMESPACE=default
 TEMPORAL_TASK_QUEUE=vm-provisioning
 
 # Control plane public URL (embedded into cloud-init for Spot VM callbacks)
-CONTROL_PLANE_URL=http://${CONTROL_PLANE_IP}:8000
+CONTROL_PLANE_URL=http://${CONTROL_PLANE_IP}
 
 # Default VM size for Spot instances
 DEFAULT_VM_SIZE=Standard_NC4as_T4_v3
+
+# Azure Blob Storage (model cache)
+AZURE_STORAGE_ACCOUNT_NAME=${STORAGE_ACCOUNT_NAME}
+AZURE_STORAGE_CONTAINER_NAME=model-cache
 EOF
 
 echo ""

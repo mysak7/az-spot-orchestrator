@@ -62,6 +62,27 @@ DEFAULT_MODELS: list[DefaultModel] = [
         vm_size="Standard_FX2ms_v2",  # 2 vCPU / 42 GB RAM — fits Q4_K_M ~17.5 GB in RAM
         description="Qwen3 30B-A3B (MoE) – 4-bit GGUF, CPU inference on 42 GB RAM spot",
     ),
+    DefaultModel(
+        name="deepseek-r1-14b",
+        model_identifier="deepseek-r1:14b",
+        size_mb=9000,
+        vm_size="Standard_NC4as_T4_v3",  # T4 16 GB VRAM — fits Q4_K_M ~9 GB
+        description="DeepSeek R1 Distill Qwen 14B – reasoning/math model with visible <think> tokens, mid-weight tier",
+    ),
+    DefaultModel(
+        name="llama32-11b-vision",
+        model_identifier="llama3.2-vision:11b",
+        size_mb=7700,
+        vm_size="Standard_NC4as_T4_v3",  # T4 16 GB VRAM — fits Q4_K_M ~7.7 GB
+        description="Llama 3.2 11B Vision – multimodal image+text model, open-weight state-of-the-art",
+    ),
+    DefaultModel(
+        name="smollm2-1b7",
+        model_identifier="smollm2:1.7b",
+        size_mb=1100,
+        vm_size="Standard_D2s_v3",  # 2 vCPU / 8 GB RAM — ultra-light CPU inference
+        description="SmolLM2 1.7B – sub-2B SOTA, outperforms Qwen 2.5 1.5B, ultra-fast CPU",
+    ),
 ]
 
 
