@@ -17,6 +17,11 @@ PROMPT = "In one sentence, what is the capital of France?"
 
 _total_start: float = 0.0
 
+GREEN  = "\033[32m"
+ORANGE = "\033[33m"
+RED    = "\033[31m"
+RESET  = "\033[0m"
+
 
 def _ts() -> str:
     """Elapsed time since test start, e.g. '+12.3s'."""
@@ -63,7 +68,7 @@ async def test_model(
             print(f"\n{sep}")
             print(f"{_ts()}  Model    : {model_name}  ({ollama_model})")
             print(f"          Instance : {result['instance']}")
-            print(f"          [SKIP]   : no running instance")
+            print(f"          {ORANGE}[SKIP]   : no running instance{RESET}")
             if left:
                 print(f"          ({left} still running...)")
             sys.stdout.flush()
@@ -102,13 +107,15 @@ async def test_model(
         print(f"{_ts()}  Model    : {model_name}  ({ollama_model})")
         print(f"          Instance : {result['instance']}")
         if result["error"] is not None:
-            print(f"          [ERROR]  : {result['error']}")
+            print(f"          {RED}[ERROR]  : {result['error']}{RESET}")
         else:
-            status_tag = "[OK]" if result["status_code"] == 200 else "[FAIL]"
+            ok_line = result["status_code"] == 200
+            color = GREEN if ok_line else RED
+            status_tag = "[OK]" if ok_line else "[FAIL]"
             elapsed = f"{result['elapsed']:.1f}s" if result["elapsed"] is not None else "?"
-            print(f"          HTTP     : {result['status_code']}  ({elapsed})  {status_tag}")
+            print(f"          {color}HTTP     : {result['status_code']}  ({elapsed})  {status_tag}{RESET}")
             if result["reply"]:
-                print(f"          Reply    : {result['reply']}")
+                print(f"          {GREEN}Reply    : {result['reply']}{RESET}")
         if left:
             print(f"          ({left} still running...)")
         sys.stdout.flush()
@@ -186,8 +193,13 @@ async def main(base_url: str) -> None:
 
     total_elapsed = time.monotonic() - _total_start
     skipped = len(results) - tested
+    summary_color = GREEN if (tested == 0 or ok == tested) else RED
     print(f"\n{'=' * 60}")
-    print(f"  {ok}/{tested} tested model(s) OK  |  {skipped} skipped  |  total {total_elapsed:.1f}s")
+    print(
+        f"  {summary_color}{ok}/{tested} tested model(s) OK{RESET}"
+        f"  |  {ORANGE}{skipped} skipped{RESET}"
+        f"  |  total {total_elapsed:.1f}s"
+    )
     print(f"{'=' * 60}")
     if tested > 0 and ok < tested:
         sys.exit(1)
