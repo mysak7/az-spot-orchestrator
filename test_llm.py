@@ -31,6 +31,10 @@ async def test_model(client: httpx.AsyncClient, base_url: str, model: dict) -> d
         statuses = [i["status"] for i in instances] or ["none"]
         result["instance"] = f"[no running instance] statuses={statuses}"
 
+    # Skip chat if no running instance
+    if not running:
+        return result
+
     # Send chat request
     payload = {
         "model": ollama_model,
@@ -62,7 +66,7 @@ async def main(base_url: str) -> None:
     print(f"Control plane : {base_url}")
     print(f"Prompt        : {PROMPT}\n")
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         # Health check
         try:
             health = await client.get(f"{base_url}/health")
