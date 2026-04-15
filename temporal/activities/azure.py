@@ -19,6 +19,7 @@ from services.azure_client import compute_client, network_client
 from temporal.types import (
     DeleteAzureVMInput,
     GetCheapestRegionInput,
+    GetCheapestRegionResult,
     ProvisionAzureVMInput,
     WaitForModelInput,
 )
@@ -229,7 +230,7 @@ async def _get_spot_placement_scores(
 
 
 @activity.defn
-async def get_cheapest_region(input: GetCheapestRegionInput) -> list[str]:
+async def get_cheapest_region(input: GetCheapestRegionInput) -> GetCheapestRegionResult:
     """Return candidate regions ordered by Spot viability.
 
     Pipeline:
@@ -330,7 +331,7 @@ async def get_cheapest_region(input: GetCheapestRegionInput) -> list[str]:
         ordered = available or list(input.candidate_regions)
 
     logger.info("Region order for %s: %s", input.vm_size, ordered)
-    return ordered
+    return GetCheapestRegionResult(regions=ordered, prices=prices)
 
 
 @activity.defn

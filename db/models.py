@@ -55,6 +55,18 @@ class VMInstance(BaseModel):
     updated_at: str = Field(default_factory=_now)
 
 
+class SystemMessage(BaseModel):
+    """A persistent warning/info message stored in Cosmos DB."""
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    level: Literal["warning", "info", "error"] = "warning"
+    title: str
+    body: str
+    vm_name: str | None = None
+    read: bool = False
+    created_at: str = Field(default_factory=_now)
+
+
 class ModelCacheEntry(BaseModel):
     # `id` = "{model_identifier_sanitized}-{region}" for direct point-read
     id: str

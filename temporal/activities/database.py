@@ -8,8 +8,8 @@ from datetime import UTC, datetime
 from azure.core.exceptions import ResourceNotFoundError
 from temporalio import activity
 
-from db.cosmos import get_instances_container
-from temporal.types import UpdateVMStatusInput
+from db.cosmos import get_instances_container, get_messages_container
+from temporal.types import CreateMessageInput, UpdateVMStatusInput
 
 logger = logging.getLogger(__name__)
 
@@ -39,3 +39,19 @@ async def update_vm_status(input: UpdateVMStatusInput) -> None:
 
     await container.replace_item(item=input.vm_name, body=item)
     logger.info("VM '%s' → status=%s", input.vm_name, input.status)
+
+
+@activity.defn
+async def create_system_message(input: CreateMessageInput) -> None:
+    """Persist a warning/info/error message to the system-messages Cosmos container."""
+    from db.models import SystemMessage
+
+    msg = SystemMessage(
+        level=input.level,
+        title=input.title,
+        body=input.body,
+        vm_name=input.vm_name,
+    )
+    container = get_messages_container()
+    await container.create_item(body=msg.model_dump())
+    logger.info("System message [%s]: %s", input.level, input.title)

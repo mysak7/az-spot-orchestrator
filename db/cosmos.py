@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 
+from azure.cosmos import PartitionKey
 from azure.cosmos.aio import ContainerProxy, CosmosClient
 from azure.identity.aio import DefaultAzureCredential
 
@@ -22,6 +23,7 @@ _DB_NAME = "az-spot-orchestrator"
 MODELS_CONTAINER = "llm-models"
 INSTANCES_CONTAINER = "vm-instances"
 MODEL_CACHE_CONTAINER = "model-cache"
+MESSAGES_CONTAINER = "system-messages"
 
 _client: CosmosClient | None = None
 
@@ -51,6 +53,10 @@ def get_cache_container() -> ContainerProxy:
     return _get_client().get_database_client(_DB_NAME).get_container_client(MODEL_CACHE_CONTAINER)
 
 
+def get_messages_container() -> ContainerProxy:
+    return _get_client().get_database_client(_DB_NAME).get_container_client(MESSAGES_CONTAINER)
+
+
 async def setup_cosmos() -> None:
     """Verify Cosmos DB connectivity.
 
@@ -66,6 +72,13 @@ async def setup_cosmos() -> None:
         client = _get_client()
         async for _ in client.list_databases():
             break
+        # Ensure the system-messages container exists (not managed by Terraform).
+        db = client.get_database_client(_DB_NAME)
+        await db.create_container_if_not_exists(
+            id=MESSAGES_CONTAINER,
+            partition_key=PartitionKey(path="/id"),
+        )
+        logger.info("Cosmos DB: system-messages container ready")
     except Exception as exc:
         logger.warning("Cosmos DB connectivity check failed: %s", exc)
 

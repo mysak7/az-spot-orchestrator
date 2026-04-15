@@ -550,6 +550,49 @@
   th.sort-asc::after  { content: " ▲"; font-size: 10px; }
   th.sort-desc::after { content: " ▼"; font-size: 10px; }
 
+  /* ── Messages page ── */
+  .msg-list { display: flex; flex-direction: column; gap: 10px; }
+
+  .msg-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+  }
+
+  .msg-card.unread { border-left: 3px solid var(--yellow); }
+  .msg-card.unread.level-error { border-left-color: var(--red); }
+  .msg-card.unread.level-info  { border-left-color: var(--blue); }
+
+  .msg-icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
+
+  .msg-body { flex: 1; min-width: 0; }
+
+  .msg-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+
+  .msg-text {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .msg-meta {
+    font-size: 11px;
+    color: var(--gray);
+    margin-top: 6px;
+  }
+
+  .msg-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
   /* ── VM jobs panel (Logs page) ── */
   .jobs-panel {
     margin-top: 8px;
@@ -739,6 +782,15 @@
       </svg>
       Logs
       <span class="nav-badge" id="nav-logs-count" style="display:none">0</span>
+    </button>
+
+    <button class="nav-item" data-page="messages" onclick="navigate('messages'); loadMessages()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+      </svg>
+      Messages
+      <span class="nav-badge" id="nav-messages-count" style="display:none;background:var(--yellow);color:#000">0</span>
     </button>
   </nav>
 
@@ -936,6 +988,21 @@
         <div class="inv-loading">Select "Spot Inventory" to load prices from the Azure Retail API…</div>
       </div>
 
+    </div>
+
+    <!-- ── Messages page ── -->
+    <div class="page" id="page-messages">
+      <div class="page-header">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+        </svg>
+        <h2>Messages</h2>
+        <button class="btn btn-ghost" style="margin-left:auto;font-size:12px;padding:4px 10px" onclick="markAllRead()">Mark all read</button>
+        <button class="btn btn-danger" style="font-size:12px;padding:4px 10px" onclick="clearAllMessages()">Clear all</button>
+      </div>
+      <div id="messages-list" class="msg-list"></div>
+      <div id="messages-empty" style="color:var(--muted);font-size:13px;padding:32px 0;text-align:center;display:none">No messages.</div>
     </div>
 
     <!-- ── Logs page ── -->
@@ -2117,10 +2184,119 @@
     _renderJobs();
   }
 
+  // ── Messages ───────────────────────────────────────────────────────────────
+  let _messages = [];
+
+  function _msgIcon(level) {
+    if (level === 'error')   return '<span style="color:var(--red)">✖</span>';
+    if (level === 'info')    return '<span style="color:var(--blue)">ℹ</span>';
+    return '<span style="color:var(--yellow)">⚠</span>';
+  }
+
+  function _renderMessages() {
+    const list  = document.getElementById('messages-list');
+    const empty = document.getElementById('messages-empty');
+    const badge = document.getElementById('nav-messages-count');
+
+    const unread = _messages.filter(m => !m.read).length;
+    if (unread > 0) { badge.textContent = unread; badge.style.display = ''; }
+    else            { badge.style.display = 'none'; }
+
+    if (!_messages.length) {
+      list.innerHTML = '';
+      empty.style.display = '';
+      return;
+    }
+    empty.style.display = 'none';
+
+    list.innerHTML = _messages.map(m => `
+      <div class="msg-card ${m.read ? '' : 'unread'} level-${esc(m.level)}">
+        <div class="msg-icon">${_msgIcon(m.level)}</div>
+        <div class="msg-body">
+          <div class="msg-title">${esc(m.title)}</div>
+          <div class="msg-text">${esc(m.body)}</div>
+          <div class="msg-meta">
+            ${m.vm_name ? `<span class="mono">${esc(m.vm_name)}</span> · ` : ''}${fmtDate(m.created_at)}
+          </div>
+        </div>
+        <div class="msg-actions">
+          ${!m.read ? `<button class="btn btn-ghost" style="font-size:11px;padding:2px 8px" onclick="markMsgRead('${esc(m.id)}')">Mark read</button>` : ''}
+          <button class="btn btn-ghost" style="font-size:11px;padding:2px 8px" onclick="deleteMsg('${esc(m.id)}')">×</button>
+        </div>
+      </div>`).join('');
+  }
+
+  async function loadMessages() {
+    try {
+      const data = await apiFetch('/api/messages');
+      _messages = data.items || [];
+      _renderMessages();
+    } catch (_) {}
+  }
+
+  async function markMsgRead(id) {
+    try {
+      await apiFetch(`/api/messages/${encodeURIComponent(id)}/read`, { method: 'PATCH' });
+      const m = _messages.find(x => x.id === id);
+      if (m) m.read = true;
+      _renderMessages();
+    } catch (err) { toast(`Error: ${err.message}`, 'error'); }
+  }
+
+  async function markAllRead() {
+    try {
+      await Promise.all(_messages.filter(m => !m.read).map(m =>
+        apiFetch(`/api/messages/${encodeURIComponent(m.id)}/read`, { method: 'PATCH' })
+      ));
+      _messages.forEach(m => { m.read = true; });
+      _renderMessages();
+    } catch (err) { toast(`Error: ${err.message}`, 'error'); }
+  }
+
+  async function deleteMsg(id) {
+    try {
+      await apiFetch(`/api/messages/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      _messages = _messages.filter(m => m.id !== id);
+      _renderMessages();
+    } catch (err) { toast(`Error: ${err.message}`, 'error'); }
+  }
+
+  async function clearAllMessages() {
+    if (!confirm('Delete all messages?')) return;
+    try {
+      await apiFetch('/api/messages', { method: 'DELETE' });
+      _messages = [];
+      _renderMessages();
+    } catch (err) { toast(`Error: ${err.message}`, 'error'); }
+  }
+
+  async function _pollMessages() {
+    try {
+      const data = await apiFetch('/api/messages?unread_only=true');
+      const items = data.items || [];
+      // Update unread badge without full re-render (avoids flickering while on other pages)
+      const badge = document.getElementById('nav-messages-count');
+      if (items.length > 0) { badge.textContent = items.length; badge.style.display = ''; }
+      else                  { badge.style.display = 'none'; }
+      // If already on the messages page, merge new items in
+      if (_currentPage === 'messages') {
+        _messages = data.items || [];
+        _renderMessages();
+      } else {
+        // quietly merge unread items not yet in _messages
+        for (const item of items) {
+          if (!_messages.find(m => m.id === item.id)) _messages.unshift(item);
+        }
+      }
+    } catch (_) {}
+  }
+
   // ── Boot ───────────────────────────────────────────────────────────────────
   _restoreJobs();
   refresh();
   setInterval(refresh, 5000);
+  _pollMessages();
+  setInterval(_pollMessages, 15000);
 </script>
 </body>
 </html>

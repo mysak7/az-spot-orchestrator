@@ -33,6 +33,20 @@ class GetCheapestRegionInput:
 
 
 @dataclass
+class GetCheapestRegionResult:
+    regions: list[str]        # ordered cheapest-first
+    prices: dict[str, float]  # region → $/hr spot price (empty if pricing API failed)
+
+
+@dataclass
+class CreateMessageInput:
+    level: str   # "warning" | "info" | "error"
+    title: str
+    body: str
+    vm_name: str | None = None
+
+
+@dataclass
 class ProvisionAzureVMInput:
     vm_name: str
     resource_group: str

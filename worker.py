@@ -16,7 +16,7 @@ from temporal.activities.azure import (
     wait_for_model_ready,
 )
 from temporal.activities.blob import copy_blob_to_region
-from temporal.activities.database import update_vm_status
+from temporal.activities.database import create_system_message, update_vm_status
 from temporal.activities.seed_blob import seed_blob_from_registry
 from temporal.workflows.blob_copy import CopyBlobWorkflow
 from temporal.workflows.seed_blob import SeedBlobWorkflow
@@ -47,6 +47,7 @@ async def main() -> None:
             wait_for_model_ready,
             delete_azure_vm,
             update_vm_status,
+            create_system_message,
             copy_blob_to_region,
             seed_blob_from_registry,
         ],

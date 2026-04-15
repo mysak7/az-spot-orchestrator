@@ -20,8 +20,9 @@ with workflow.unsafe.imports_passed_through():
         provision_azure_vm,
         wait_for_model_ready,
     )
-    from temporal.activities.database import update_vm_status
+    from temporal.activities.database import create_system_message, update_vm_status
     from temporal.types import (
+        CreateMessageInput,
         DeleteAzureVMInput,
         GetCheapestRegionInput,
         LaunchBareVMInput,
@@ -77,8 +78,9 @@ class ProvisionVMWorkflow:
         # ── Step 1: regions ordered cheapest-first (or forced list) ──────
         if input.force_regions:
             regions: list[str] = input.force_regions
+            region_prices: dict[str, float] = {}
         else:
-            regions = await workflow.execute_activity(
+            ranking = await workflow.execute_activity(
                 get_cheapest_region,
                 GetCheapestRegionInput(
                     vm_size=input.vm_size,
@@ -87,6 +89,8 @@ class ProvisionVMWorkflow:
                 start_to_close_timeout=timedelta(minutes=5),
                 retry_policy=_FAST_RETRY,
             )
+            regions = ranking.regions
+            region_prices = ranking.prices
 
         # ── Step 2: provision VM, falling back through regions on SkuNotAvailable ──
         # Note: get_cheapest_region raises InsufficientSpotQuota (non_retryable) if
@@ -137,6 +141,37 @@ class ProvisionVMWorkflow:
                             resource_group=input.resource_group,
                         ),
                         start_to_close_timeout=timedelta(minutes=10),
+                        retry_policy=_FAST_RETRY,
+                    )
+                    # Emit a warning message with price comparison
+                    next_regions = regions[regions.index(candidate) + 1:]
+                    next_region = next_regions[0] if next_regions else None
+                    failed_price = region_prices.get(candidate)
+                    next_price = region_prices.get(next_region) if next_region else None
+                    if failed_price and next_price:
+                        pct = (next_price - failed_price) / failed_price * 100
+                        body = (
+                            f"No Spot capacity for {input.vm_size} in {candidate} "
+                            f"(${failed_price:.4f}/hr). "
+                            f"Switching to {next_region} (${next_price:.4f}/hr, "
+                            f"{'+'if pct >= 0 else ''}{pct:.1f}%)."
+                        )
+                    elif next_region:
+                        body = (
+                            f"No Spot capacity for {input.vm_size} in {candidate}. "
+                            f"Switching to {next_region}."
+                        )
+                    else:
+                        body = f"No Spot capacity for {input.vm_size} in {candidate}. No more regions to try."
+                    await workflow.execute_activity(
+                        create_system_message,
+                        CreateMessageInput(
+                            level="warning",
+                            title=f"Region failover: {candidate} → {next_region or 'none'} ({input.vm_size})",
+                            body=body,
+                            vm_name=input.vm_name,
+                        ),
+                        start_to_close_timeout=timedelta(minutes=2),
                         retry_policy=_FAST_RETRY,
                     )
                     last_error = exc
@@ -240,8 +275,9 @@ class LaunchBareVMWorkflow:
         # If caller specified a region use only that, otherwise rank all candidates.
         if input.region:
             regions = [input.region]
+            region_prices: dict[str, float] = {}
         else:
-            regions = await workflow.execute_activity(
+            ranking = await workflow.execute_activity(
                 get_cheapest_region,
                 GetCheapestRegionInput(
                     vm_size=input.vm_size,
@@ -250,6 +286,8 @@ class LaunchBareVMWorkflow:
                 start_to_close_timeout=timedelta(minutes=5),
                 retry_policy=_FAST_RETRY,
             )
+            regions = ranking.regions
+            region_prices = ranking.prices
 
         ip_address = ""
         region = ""
@@ -287,6 +325,37 @@ class LaunchBareVMWorkflow:
                             resource_group=input.resource_group,
                         ),
                         start_to_close_timeout=timedelta(minutes=10),
+                        retry_policy=_FAST_RETRY,
+                    )
+                    # Emit a warning message with price comparison
+                    next_regions = regions[regions.index(candidate) + 1:]
+                    next_region = next_regions[0] if next_regions else None
+                    failed_price = region_prices.get(candidate)
+                    next_price = region_prices.get(next_region) if next_region else None
+                    if failed_price and next_price:
+                        pct = (next_price - failed_price) / failed_price * 100
+                        body = (
+                            f"No Spot capacity for {input.vm_size} in {candidate} "
+                            f"(${failed_price:.4f}/hr). "
+                            f"Switching to {next_region} (${next_price:.4f}/hr, "
+                            f"{'+'if pct >= 0 else ''}{pct:.1f}%)."
+                        )
+                    elif next_region:
+                        body = (
+                            f"No Spot capacity for {input.vm_size} in {candidate}. "
+                            f"Switching to {next_region}."
+                        )
+                    else:
+                        body = f"No Spot capacity for {input.vm_size} in {candidate}. No more regions to try."
+                    await workflow.execute_activity(
+                        create_system_message,
+                        CreateMessageInput(
+                            level="warning",
+                            title=f"Region failover: {candidate} → {next_region or 'none'} ({input.vm_size})",
+                            body=body,
+                            vm_name=input.vm_name,
+                        ),
+                        start_to_close_timeout=timedelta(minutes=2),
                         retry_policy=_FAST_RETRY,
                     )
                     last_error = exc
