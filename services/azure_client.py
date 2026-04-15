@@ -16,7 +16,12 @@ from config import get_settings
 async def compute_client() -> AsyncGenerator[ComputeManagementClient, None]:
     s = get_settings()
     async with DefaultAzureCredential() as credential:
-        async with ComputeManagementClient(credential, s.azure_subscription_id) as client:
+        async with ComputeManagementClient(
+            credential,
+            s.azure_subscription_id,
+            connection_timeout=10,
+            read_timeout=30,
+        ) as client:
             yield client
 
 

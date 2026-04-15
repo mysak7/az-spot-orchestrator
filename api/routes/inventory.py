@@ -412,11 +412,16 @@ async def get_spot_inventory(
         try:
             from config import get_settings
             regions = list(get_settings().azure_candidate_regions)
-            # Fetch prices, SKU availability, and LP quota in parallel
-            rows, (available_skus, vcpu_counts, _, memory_gb_map), lp_cores_limit = await asyncio.gather(
-                _fetch_raw_spot_prices(regions),
-                _fetch_subscription_available(regions),
-                _fetch_lp_cores_limit(regions),
+            # Fetch prices, SKU availability, and LP quota in parallel.
+            # Cap at 60 s — Azure SDK calls have no built-in timeout and can hang
+            # indefinitely when listing VM SKUs globally (thousands of pages).
+            rows, (available_skus, vcpu_counts, _, memory_gb_map), lp_cores_limit = await asyncio.wait_for(
+                asyncio.gather(
+                    _fetch_raw_spot_prices(regions),
+                    _fetch_subscription_available(regions),
+                    _fetch_lp_cores_limit(regions),
+                ),
+                timeout=60,
             )
             payload = _build_inventory(rows, available_skus, vcpu_counts, lp_cores_limit, memory_gb_map)
             _cache = (now, payload)
@@ -429,7 +434,7 @@ async def get_spot_inventory(
             else:
                 raise HTTPException(
                     status_code=503,
-                    detail=f"Azure Retail Prices API unavailable: {exc}",
+                    detail=f"Spot inventory fetch timed out or failed: {exc}",
                 )
     else:
         payload = _cache[1]
