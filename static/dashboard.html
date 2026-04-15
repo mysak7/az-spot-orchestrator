@@ -1343,6 +1343,21 @@
     return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
+  function copyText(text, msg) {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(() => toast(msg || 'Copied!', 'success'));
+    } else {
+      const el = document.createElement('textarea');
+      el.value = text;
+      el.style.position = 'fixed'; el.style.opacity = '0';
+      document.body.appendChild(el);
+      el.select();
+      try { document.execCommand('copy'); toast(msg || 'Copied!', 'success'); }
+      catch { toast('Copy failed', 'error'); }
+      document.body.removeChild(el);
+    }
+  }
+
   // ── Render VM Instances ────────────────────────────────────────────────────
   let _instancesAll = [];
   let _instSortCol = 'updated_at';
@@ -1448,7 +1463,7 @@
         <td class="muted">${esc(i.region || '—')}</td>
         <td class="mono" style="font-size:12px">${i.ip_address
           ? `<a href="http://${esc(i.ip_address)}:11434" target="_blank" style="color:var(--blue);text-decoration:none">${esc(i.ip_address)}</a>
-             <button class="btn btn-ghost" title="Copy SSH command" style="padding:1px 5px;font-size:11px;margin-left:4px;color:var(--muted)" onclick="navigator.clipboard.writeText('ssh azureuser@${esc(i.ip_address)}').then(()=>toast('Copied: ssh azureuser@${esc(i.ip_address)}','success'))">SSH</button>`
+             <button class="btn btn-ghost" title="Copy SSH command" style="padding:1px 5px;font-size:11px;margin-left:4px;color:var(--muted)" onclick="copyText('ssh azureuser@${esc(i.ip_address)}','Copied: ssh azureuser@${esc(i.ip_address)}')">SSH</button>`
           : '<span class="muted">—</span>'
         }</td>
         <td>${skuCell}</td>
@@ -2474,7 +2489,7 @@
       if (j.status === 'running') {
         const accessLine = j.model_name
           ? `<a class="ssh-cmd" href="http://${esc(j.ip_address)}:11434" target="_blank" style="text-decoration:none;display:block">http://${esc(j.ip_address)}:11434 — ${esc(j.model_name)} ready</a>`
-          : `<code class="ssh-cmd" title="Click to copy" onclick="navigator.clipboard.writeText(this.textContent.trim());toast('Copied!','success')">ssh azureuser@${esc(j.ip_address)}</code>`;
+          : `<code class="ssh-cmd" title="Click to copy" onclick="copyText(this.textContent.trim())">ssh azureuser@${esc(j.ip_address)}</code>`;
         return `<div class="job-card">
           <div class="job-card-header">
             <span style="color:var(--green);font-size:16px">●</span>
