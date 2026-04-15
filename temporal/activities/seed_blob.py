@@ -121,7 +121,7 @@ async def _upload_with_heartbeat(bc: object, tar_path: Path) -> None:
     task = asyncio.create_task(_heartbeat())
     try:
         with tar_path.open("rb") as fh:
-            await bc.upload_blob(fh, overwrite=True, blob_type="BlockBlob")  # type: ignore[union-attr]
+            await bc.upload_blob(fh, overwrite=True, blob_type="BlockBlob")  # type: ignore[attr-defined]
     finally:
         task.cancel()
 

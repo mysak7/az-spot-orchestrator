@@ -173,7 +173,7 @@ async def _fetch_subscription_available(
                     for cap in sku.capabilities or []:
                         if cap.name == "vCPUs" and vm_size_lower not in vcpu_counts:
                             try:
-                                vcpu_counts[vm_size_lower] = int(cap.value)
+                                vcpu_counts[vm_size_lower] = int(cap.value or 0)
                             except (TypeError, ValueError):
                                 pass
                         elif cap.name == "Family" and vm_size_lower not in vm_family_map:
@@ -261,7 +261,7 @@ async def _fetch_raw_spot_prices(candidate_regions: list[str]) -> list[dict]:
     for region, result in zip(candidate_regions, results):
         if isinstance(result, Exception):
             logger.warning("Failed to fetch prices for %s: %s", region, result)
-        else:
+        elif isinstance(result, list):
             rows.extend(result)
 
     logger.info(

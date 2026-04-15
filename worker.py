@@ -20,7 +20,11 @@ from temporal.activities.database import update_vm_status
 from temporal.activities.seed_blob import seed_blob_from_registry
 from temporal.workflows.blob_copy import CopyBlobWorkflow
 from temporal.workflows.seed_blob import SeedBlobWorkflow
-from temporal.workflows.vm_provisioning import DeleteVMWorkflow, LaunchBareVMWorkflow, ProvisionVMWorkflow
+from temporal.workflows.vm_provisioning import (
+    DeleteVMWorkflow,
+    LaunchBareVMWorkflow,
+    ProvisionVMWorkflow,
+)
 
 logging.basicConfig(
     level=logging.INFO,

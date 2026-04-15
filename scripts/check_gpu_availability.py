@@ -45,7 +45,7 @@ def _bar(available: list[str], all_regions: list[str]) -> str:
 
 
 async def check(family_filter: str | None, show_all: bool) -> None:
-    print(f"\nAzure subscription GPU/VM availability check")
+    print("\nAzure subscription GPU/VM availability check")
     print(f"Regions: {', '.join(REGIONS)}\n")
 
     # available[vm_size][region] = True/False/None (None = not offered)
@@ -144,7 +144,7 @@ async def check(family_filter: str | None, show_all: bool) -> None:
             reason_str = next(iter(set(reasons.values())), "restricted")
             print(f"{name:<{col_w}} \033[90m{reason_str}\033[0m")
 
-    print(f"\nLegend:  ✓ = available  ✗ = subscription restricted  — = not offered in region\n")
+    print("\nLegend:  ✓ = available  ✗ = subscription restricted  — = not offered in region\n")
 
 
 def _get_subscription_id() -> str:

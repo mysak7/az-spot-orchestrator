@@ -52,7 +52,7 @@ def _blob_name(model_identifier: str, region: str) -> str:
     return f"{region}/{sanitized}.tar.lz4"
 
 
-async def _get_delegation_key() -> object:
+async def _get_delegation_key() -> UserDelegationKey:
     """Return a cached user-delegation key, refreshing when near expiry.
 
     Uses the service principal already configured for Azure VM operations —

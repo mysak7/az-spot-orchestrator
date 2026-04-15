@@ -66,12 +66,12 @@ async def _filter_sku_available_regions(
                     for cap in sku.capabilities or []:
                         if cap.name == "vCPUs" and vcpu_count == 0:
                             try:
-                                vcpu_count = int(cap.value)
+                                vcpu_count = int(cap.value or 0)
                             except (TypeError, ValueError):
                                 pass
                         elif cap.name == "Family" and not vm_family:
                             vm_family = cap.value or ""
-                loc_raw: str = (sku.locations or [None])[0] or ""
+                loc_raw: str = (sku.locations or [""])[0] or ""
                 matched = region_lower.get(loc_raw.lower())
                 if not matched:
                     continue
@@ -198,7 +198,7 @@ async def _get_spot_placement_scores(
     }
 
     try:
-        from azure.identity.aio import DefaultAzureCredential  # local import to avoid top-level cost
+        from azure.identity.aio import DefaultAzureCredential  # noqa: PLC0415,I001  # local import to avoid top-level cost
 
         async with DefaultAzureCredential() as cred:
             token_obj = await cred.get_token("https://management.azure.com/.default")
