@@ -65,6 +65,8 @@ async def _download_layer(
     """Stream a single blob layer to *dest* with bounded concurrency.
 
     *on_bytes* is an optional async callable(n_bytes) called after each chunk.
+    Heartbeats are sent every 30 s during streaming so large layers (e.g. a
+    single 15 GB GGUF) don't exceed the 5-minute heartbeat_timeout.
     """
     async with sem:
         activity.heartbeat(f"downloading {digest[:19]}")
@@ -73,9 +75,14 @@ async def _download_layer(
             f"{_REGISTRY}/v2/library/{name}/blobs/{digest}",
         ) as resp:
             resp.raise_for_status()
+            last_heartbeat = time.monotonic()
             with dest.open("wb") as fh:
                 async for chunk in resp.aiter_bytes(chunk_size=4 * 1024 * 1024):
                     fh.write(chunk)
+                    now = time.monotonic()
+                    if now - last_heartbeat >= 30.0:
+                        activity.heartbeat(f"downloading {digest[:19]}")
+                        last_heartbeat = now
                     if on_bytes is not None:
                         await on_bytes(len(chunk))
 
