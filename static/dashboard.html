@@ -986,6 +986,7 @@
   let _cacheEntries = [];
   let _cacheRegions = [];
   let _selectedCacheModel = '';
+  let _controlPlaneRegion = '';
   let _pendingRegions = new Set();       // desired checked state (local UI)
   let _pendingModelForRegions = null;    // which model _pendingRegions belongs to
 
@@ -1284,12 +1285,16 @@
       );
     }
 
+    const hasAnySource = _cacheEntries.some(
+      e => e.model_identifier === _selectedCacheModel && e.status === 'available'
+    );
     document.getElementById('cache-region-grid').innerHTML = _cacheRegions.map(region => {
       const e = byRegion[region];
       const isAvail   = e && e.status === 'available';
       const isBusy    = e && e.status === 'uploading';
       const isFailed  = e && e.status === 'failed';
       const isChecked = _pendingRegions.has(region);
+      const isCtrl    = region === _controlPlaneRegion;
       const cls = !e ? '' : isBusy ? 'rc-busy' : isFailed ? 'rc-failed' : 'rc-available';
       const phase = e?.current_phase ?? '';
       const size  = e?.size_bytes ? ` · ${fmtBytes(e.size_bytes)}` : '';
@@ -1309,12 +1314,19 @@
         ? `<div class="rc-progress"><div class="rc-progress-bar prog-busy" style="width:${dlPct ?? 0}%"></div></div>`
         : '';
 
+      // badge shown on the control-plane region when seeding is needed
+      const ctrlBadge = (isCtrl && !hasAnySource)
+        ? `<span style="font-size:10px;background:#4a6fa5;color:#fff;border-radius:3px;padding:1px 4px;margin-left:4px;vertical-align:middle">seed here first</span>`
+        : isCtrl
+        ? `<span style="font-size:10px;background:#555;color:#ccc;border-radius:3px;padding:1px 4px;margin-left:4px;vertical-align:middle">ctrl</span>`
+        : '';
+
       return `
         <div class="region-card ${cls}">
           <div class="rc-top">
             <label>
               <input type="checkbox" ${isBusy ? 'disabled' : ''} ${isChecked ? 'checked' : ''} onchange="onCacheRegionCheck('${esc(region)}', this.checked)">
-              <span class="rc-name">${esc(region)}</span>
+              <span class="rc-name">${esc(region)}${ctrlBadge}</span>
               <span class="rc-meta">${esc(meta)}</span>
             </label>
           </div>
@@ -1390,25 +1402,45 @@
       if (!confirm(msg)) return;
     }
 
-    // Decide endpoint per-region: copy if a source blob exists, seed if not
+    // Decide endpoint per-region: copy if a source blob exists, seed if not.
+    // When no source exists yet, seed only the control-plane region first
+    // (blob upload from control plane to nearby storage is fastest), then issue
+    // server-side copies to all other selected regions.
     const hasSource = _cacheEntries.some(
       e => e.model_identifier === _selectedCacheModel && e.status === 'available'
     );
     let copyCount = 0, seedCount = 0;
-    for (const region of toAdd) {
-      const endpoint = hasSource ? '/api/storage/cache/copy' : '/api/storage/cache/seed';
+    if (!hasSource && toAdd.length > 0) {
+      // Determine seed target: prefer control-plane region if selected, else first region
+      const seedRegion = toAdd.includes(_controlPlaneRegion) ? _controlPlaneRegion : toAdd[0];
+      const copyRegions = toAdd.filter(r => r !== seedRegion);
       try {
-        await apiFetch(endpoint, {
+        await apiFetch('/api/storage/cache/seed', {
           method: 'POST',
-          body: JSON.stringify({ model_identifier: _selectedCacheModel, target_region: region }),
+          body: JSON.stringify({ model_identifier: _selectedCacheModel, target_region: seedRegion }),
         });
-        hasSource ? copyCount++ : seedCount++;
+        seedCount++;
       } catch (err) {
-        toast(`Cache to ${region} failed: ${err.message}`, 'error');
+        toast(`Seed to ${seedRegion} failed: ${err.message}`, 'error');
+      }
+      if (copyRegions.length > 0) {
+        toast(`Seeding to ${seedRegion} — once available, copy to ${copyRegions.join(', ')} manually`, 'info');
+      }
+    } else {
+      for (const region of toAdd) {
+        try {
+          await apiFetch('/api/storage/cache/copy', {
+            method: 'POST',
+            body: JSON.stringify({ model_identifier: _selectedCacheModel, target_region: region }),
+          });
+          copyCount++;
+        } catch (err) {
+          toast(`Cache to ${region} failed: ${err.message}`, 'error');
+        }
       }
     }
     if (copyCount > 0) toast(`Blob copy started for ${copyCount} region(s)`, 'success');
-    if (seedCount > 0) toast(`Caching started for ${seedCount} region(s) — downloading from Ollama registry`, 'success');
+    if (seedCount > 0) toast(`Seeding ${_selectedCacheModel} to ${_controlPlaneRegion || 'first region'} — downloading from Ollama registry`, 'success');
 
     for (const region of toRemove) {
       try {
@@ -1429,6 +1461,7 @@
   async function _loadCacheRegions() {
     if (_cacheRegions.length) return;
     try { _cacheRegions = await apiFetch('/api/storage/regions'); } catch (_) {}
+    try { _controlPlaneRegion = await apiFetch('/api/storage/control-region'); } catch (_) {}
   }
 
   async function refresh() {

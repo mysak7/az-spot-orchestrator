@@ -47,9 +47,9 @@ def _sanitize_identifier(model_identifier: str) -> str:
 
 
 def _blob_name(model_identifier: str, region: str) -> str:
-    """Generate blob name: {region}/{model_identifier_sanitized}.tar.gz"""
+    """Generate blob name: {region}/{model_identifier_sanitized}.tar.lz4"""
     sanitized = _sanitize_identifier(model_identifier)
-    return f"{region}/{sanitized}.tar.gz"
+    return f"{region}/{sanitized}.tar.lz4"
 
 
 async def _get_delegation_key() -> object:

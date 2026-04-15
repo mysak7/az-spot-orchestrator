@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # Control plane URL (embedded into cloud-init for VM callbacks)
     control_plane_url: str = "http://localhost:8000"
 
+    # Azure region where the control plane itself runs.  Used as the default
+    # seed target — blob uploads go to nearby storage → faster, cheaper egress.
+    control_plane_region: str = "westeurope"
+
     # VM provisioning defaults
     default_vm_size: str = "Standard_NC4as_T4_v3"
     azure_candidate_regions: list[str] = [

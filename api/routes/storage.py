@@ -65,6 +65,16 @@ async def list_regions() -> list[str]:
     return get_settings().azure_candidate_regions
 
 
+@router.get("/storage/control-region", response_model=str)
+async def get_control_plane_region() -> str:
+    """Return the Azure region where the control plane runs.
+
+    Used by the dashboard to recommend this region as the first seed target —
+    blob uploads from the control plane to nearby storage are faster.
+    """
+    return get_settings().control_plane_region
+
+
 @router.post("/storage/cache/copy", status_code=202)
 async def copy_blob(req: CopyBlobRequest, temporal: TemporalClient) -> dict:
     """Start a CopyBlobWorkflow to replicate a cached model to a new region.

@@ -135,10 +135,10 @@ def generate_cloud_init(
                 "import sys,json; print(json.load(sys.stdin).get('download_url',''))" 2>/dev/null || echo "")
 
               if [ -n "$DOWNLOAD_URL" ]; then
-                if curl -sf -o /tmp/model.tar.gz "$DOWNLOAD_URL"; then
+                if curl -sf -o /tmp/model.tar.lz4 "$DOWNLOAD_URL"; then
                   echo "Extracting model..."
-                  tar -xzf /tmp/model.tar.gz -C /mnt/resource/ || true
-                  rm -f /tmp/model.tar.gz
+                  lz4cat /tmp/model.tar.lz4 | tar -x -C /mnt/resource/ || true
+                  rm -f /tmp/model.tar.lz4
                   echo "Model extracted. Restarting Ollama..."
                   systemctl restart ollama
                   sleep 10
@@ -167,9 +167,10 @@ def generate_cloud_init(
               -H 'Content-Type: application/json' \
               -d '{{"status":"running"}}' || true
 
-        # Install curl early in the boot sequence
+        # Install curl and lz4 early in the boot sequence
         packages:
           - curl
+          - lz4
 
         package_update: true
     """)

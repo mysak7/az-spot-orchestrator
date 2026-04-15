@@ -1,8 +1,8 @@
 """Temporal activity for seeding Azure Blob Storage from the Ollama registry.
 
 Downloads all model layers directly from registry.ollama.ai (no VM needed),
-packs them into the same tar.gz layout that VMs expect, and uploads to the
-target-region blob container.
+packs them into a tar.lz4 archive (lz4 is much faster than gzip for already-
+compressed GGUF weights), and uploads to the target-region blob container.
 """
 
 from __future__ import annotations
@@ -16,6 +16,8 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+import lz4.frame
 
 import httpx
 from temporalio import activity
@@ -75,15 +77,41 @@ async def _download_layer(
                         await on_bytes(len(chunk))
 
 
-def _build_tar(models_dir: Path, tar_path: Path) -> int:
-    """Pack *models_dir* into *tar_path* and return the file size in bytes."""
-    with tarfile.open(tar_path, "w:gz") as tar:
-        tar.add(models_dir, arcname="models")
-    return tar_path.stat().st_size
+def _build_tar_lz4(models_dir: Path, tar_lz4_path: Path) -> int:
+    """Pack *models_dir* into an lz4-compressed tar and return the file size in bytes.
+
+    lz4 is orders of magnitude faster than gzip for this workload — GGUF model
+    weights are already in a semi-compressed format, so gzip gains very little
+    while consuming significant CPU time (minutes for 20 GB models).
+    """
+    with lz4.frame.open(tar_lz4_path, "wb") as lz4_fh:
+        with tarfile.open(fileobj=lz4_fh, mode="w|") as tar:
+            tar.add(models_dir, arcname="models")
+    return tar_lz4_path.stat().st_size
+
+
+async def _archive_with_heartbeat(models_dir: Path, tar_lz4_path: Path) -> int:
+    """Run lz4 tar creation in a thread pool while heartbeating so Temporal doesn't time out.
+
+    Without heartbeating during this phase, large models (e.g. 20 GB) can exceed
+    the 5-minute heartbeat_timeout and be incorrectly killed by Temporal.
+    """
+
+    async def _heartbeat_loop() -> None:
+        while True:
+            activity.heartbeat("archiving model files (lz4)")
+            await asyncio.sleep(30)
+
+    task = asyncio.create_task(_heartbeat_loop())
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(None, _build_tar_lz4, models_dir, tar_lz4_path)
+    finally:
+        task.cancel()
 
 
 async def _upload_with_heartbeat(bc: object, tar_path: Path) -> None:
-    """Upload tar.gz to blob storage, heartbeating every 30 s so Temporal doesn't time out."""
+    """Upload blob to Azure Storage, heartbeating every 30 s so Temporal doesn't time out."""
 
     async def _heartbeat() -> None:
         while True:
@@ -102,12 +130,14 @@ async def _upload_with_heartbeat(bc: object, tar_path: Path) -> None:
 async def seed_blob_from_registry(input: SeedBlobInput) -> SeedBlobResult:
     """Download a model from Ollama registry and upload it to Azure Blob Storage.
 
-    Produces a tar.gz with the same internal layout as VMs expect:
+    Produces a tar.lz4 with the internal layout that VMs expect:
       models/blobs/sha256-<digest>
       models/manifests/registry.ollama.ai/library/<name>/<tag>
 
-    This lets VMs skip the Ollama pull entirely — they just extract the tar
-    and restart Ollama.
+    This lets VMs skip the Ollama pull entirely — they just extract the archive
+    and restart Ollama.  lz4 is used instead of gzip because GGUF weights don't
+    compress well with gzip (< 5% smaller) but gzip creation takes minutes for
+    large models, causing Temporal heartbeat timeouts.
     """
     model_identifier = input.model_identifier
     region = input.target_region
@@ -187,26 +217,22 @@ async def seed_blob_from_registry(input: SeedBlobInput) -> SeedBlobResult:
 
         # ── Archive ─────────────────────────────────────────────────────────────
         await update_upload_phase(model_identifier, region, "archiving")
-        activity.heartbeat("building tar.gz")
-        tar_path = tmpdir / "model.tar.gz"
-        loop = asyncio.get_running_loop()
+        tar_lz4_path = tmpdir / "model.tar.lz4"
         start = time.monotonic()
-        size_bytes = await loop.run_in_executor(
-            None, _build_tar, tmpdir / "models", tar_path
-        )
+        size_bytes = await _archive_with_heartbeat(tmpdir / "models", tar_lz4_path)
 
         # ── Upload ──────────────────────────────────────────────────────────────
         await update_upload_phase(model_identifier, region, "uploading")
         blob = _blob_name(model_identifier, region)
         async with blob_service_client() as az:
             bc = az.get_blob_client(container=s.azure_storage_container_name, blob=blob)
-            await _upload_with_heartbeat(bc, tar_path)
+            await _upload_with_heartbeat(bc, tar_lz4_path)
 
         duration = time.monotonic() - start
         await register_upload_complete(model_identifier, region, size_bytes, duration)
 
         logger.info(
-            "Seeded blob %s in %s: %.1f MB in %.1fs",
+            "Seeded lz4 blob %s in %s: %.1f MB in %.1fs",
             model_identifier,
             region,
             size_bytes / 1_048_576,
