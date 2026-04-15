@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Quick smoke-test: send a chat request through the control-plane proxy
-and print the response.  Requires the FastAPI server to be running."""
+"""Smoke-test: check all models in the catalog and send a chat request through
+the control-plane proxy for each one — all models tested in parallel.
+Requires the FastAPI server to be running."""
 
 from __future__ import annotations
 
@@ -12,82 +13,102 @@ import time
 import httpx
 
 DEFAULT_BASE_URL = "http://74.241.243.18"
-MODEL_NAME = "qwen2-5-1-5b"  # model_name as registered in /api/models
-OLLAMA_MODEL = "qwen2.5:1.5b"  # Ollama tag sent in the request body
 PROMPT = "In one sentence, what is the capital of France?"
 
 
-async def main(base_url: str) -> None:
-    BASE_URL = base_url.rstrip("/")
-    print(f"Target : {BASE_URL}/proxy/{MODEL_NAME}/v1/chat/completions")
-    print(f"Prompt : {PROMPT}\n")
+async def test_model(client: httpx.AsyncClient, base_url: str, model: dict) -> dict:
+    model_name = model["name"]
+    ollama_model = model["model_identifier"]
+    result = {"model": model_name, "ollama": ollama_model, "instance": None, "status_code": None, "reply": None, "elapsed": None, "error": None}
 
+    # Check running instances
+    inst_resp = await client.get(f"{base_url}/api/models/{model['id']}/instances")
+    instances = inst_resp.json() if inst_resp.status_code == 200 else []
+    running = [i for i in instances if i["status"] == "running"]
+    if running:
+        result["instance"] = f"{running[0]['vm_name']} @ {running[0].get('ip_address')} ({running[0].get('region')})"
+    else:
+        statuses = [i["status"] for i in instances] or ["none"]
+        result["instance"] = f"[no running instance] statuses={statuses}"
+
+    # Send chat request
     payload = {
-        "model": OLLAMA_MODEL,
+        "model": ollama_model,
         "messages": [{"role": "user", "content": PROMPT}],
         "stream": False,
     }
-
     t0 = time.monotonic()
+    try:
+        resp = await client.post(
+            f"{base_url}/proxy/{model_name}/v1/chat/completions",
+            json=payload,
+        )
+        result["elapsed"] = time.monotonic() - t0
+        result["status_code"] = resp.status_code
+        if resp.status_code == 200:
+            data = resp.json()
+            result["reply"] = data.get("choices", [{}])[0].get("message", {}).get("content", "<no content>")
+        else:
+            result["error"] = resp.text[:200]
+    except httpx.RequestError as exc:
+        result["elapsed"] = time.monotonic() - t0
+        result["error"] = str(exc)
+
+    return result
+
+
+async def main(base_url: str) -> None:
+    base_url = base_url.rstrip("/")
+    print(f"Control plane : {base_url}")
+    print(f"Prompt        : {PROMPT}\n")
+
     async with httpx.AsyncClient(timeout=120.0) as client:
-        # 1. Check control plane is up
+        # Health check
         try:
-            health = await client.get(f"{BASE_URL}/health")
+            health = await client.get(f"{base_url}/health")
             health.raise_for_status()
         except Exception as exc:
             print(f"[ERROR] Control plane not reachable: {exc}")
             sys.exit(1)
 
-        # 2. Check a running instance exists
-        instances_resp = await client.get(f"{BASE_URL}/api/models")
-        models = instances_resp.json() if instances_resp.status_code == 200 else []
-        model_entry = next((m for m in models if m["name"] == MODEL_NAME), None)
-        if model_entry:
-            inst_resp = await client.get(f"{BASE_URL}/api/models/{model_entry['id']}/instances")
-            instances = inst_resp.json() if inst_resp.status_code == 200 else []
-            running = [i for i in instances if i["status"] == "running"]
-            if running:
-                print(
-                    f"[OK] Running instance: {running[0]['vm_name']} @ {running[0].get('ip_address')} ({running[0].get('region')})"
-                )
-            else:
-                statuses = [i["status"] for i in instances] or ["none"]
-                print(f"[WARN] No running instance found (statuses: {statuses})")
-        else:
-            print(f"[WARN] Model '{MODEL_NAME}' not found in registry")
-
-        # 3. Send the chat request through the proxy
-        print("\nSending chat request...")
-        try:
-            resp = await client.post(
-                f"{BASE_URL}/proxy/{MODEL_NAME}/v1/chat/completions",
-                json=payload,
-            )
-        except httpx.RequestError as exc:
-            print(f"[ERROR] Request failed: {exc}")
+        # Fetch catalog
+        catalog_resp = await client.get(f"{base_url}/api/models")
+        if catalog_resp.status_code != 200:
+            print(f"[ERROR] Failed to fetch model catalog: {catalog_resp.status_code}")
             sys.exit(1)
+        models = catalog_resp.json()
+        if not models:
+            print("[WARN] No models registered in catalog.")
+            return
+        print(f"Found {len(models)} model(s) in catalog — testing in parallel...\n")
 
-    elapsed = time.monotonic() - t0
+        # Test all models in parallel
+        tasks = [test_model(client, base_url, m) for m in models]
+        results = await asyncio.gather(*tasks)
 
-    print(f"HTTP status : {resp.status_code}  ({elapsed:.1f}s)")
-
-    if resp.status_code != 200:
-        print(f"[ERROR] {resp.text}")
+    # Print results
+    ok = 0
+    for r in results:
+        sep = "-" * 60
+        print(sep)
+        print(f"Model    : {r['model']}  ({r['ollama']})")
+        print(f"Instance : {r['instance']}")
+        if r["error"]:
+            print(f"[ERROR]  : {r['error']}")
+        else:
+            status_tag = "[OK]" if r["status_code"] == 200 else "[FAIL]"
+            print(f"HTTP     : {r['status_code']}  ({r['elapsed']:.1f}s)  {status_tag}")
+            if r["reply"]:
+                print(f"Reply    : {r['reply']}")
+                ok += 1
+    print("-" * 60)
+    print(f"\n{ok}/{len(results)} model(s) responded successfully.")
+    if ok < len(results):
         sys.exit(1)
-
-    data = resp.json()
-    reply = data.get("choices", [{}])[0].get("message", {}).get("content", "<no content>")
-    usage = data.get("usage", {})
-
-    print(f"Reply       : {reply}")
-    if usage:
-        print(
-            f"Tokens      : prompt={usage.get('prompt_tokens')}  completion={usage.get('completion_tokens')}  total={usage.get('total_tokens')}"
-        )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Smoke-test the LLM proxy")
+    parser = argparse.ArgumentParser(description="Parallel smoke-test for all catalog models")
     parser.add_argument(
         "--url",
         default=DEFAULT_BASE_URL,
