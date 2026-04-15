@@ -67,6 +67,21 @@ class SystemMessage(BaseModel):
     created_at: str = Field(default_factory=_now)
 
 
+class FilesShareEntry(BaseModel):
+    """Tracks a per-region Azure Files NFS share that has model weights pre-loaded."""
+
+    # `id` = "{model_identifier_sanitized}-{region}" for direct point-read
+    id: str
+    model_identifier: str  # e.g. "smollm2:1.7b"
+    region: str             # e.g. "westeurope"
+    storage_account: str    # e.g. "azspotfileswesteurope"
+    share_name: str         # always "models"
+    size_bytes: int = 0
+    status: Literal["provisioning", "available", "failed"] = "provisioning"
+    created_at: str = Field(default_factory=_now)
+    updated_at: str = Field(default_factory=_now)
+
+
 class ModelCacheEntry(BaseModel):
     # `id` = "{model_identifier_sanitized}-{region}" for direct point-read
     id: str

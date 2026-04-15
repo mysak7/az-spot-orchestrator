@@ -127,6 +127,13 @@ class Settings(BaseSettings):
     azure_storage_account_name: str = ""
     azure_storage_container_name: str = "model-cache"
 
+    # Azure Files NFS (fast model mount — replaces blob download on VM boot)
+    # Storage accounts are created per-region: "{azure_files_account_prefix}{region}"
+    azure_files_account_prefix: str = "azspotfiles"
+    azure_files_share_name: str = "models"
+    # Control plane's public IP — added to Files account firewall for seeding
+    control_plane_public_ip: str = "135.225.121.221"
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -24,6 +24,7 @@ MODELS_CONTAINER = "llm-models"
 INSTANCES_CONTAINER = "vm-instances"
 MODEL_CACHE_CONTAINER = "model-cache"
 MESSAGES_CONTAINER = "system-messages"
+FILES_CACHE_CONTAINER = "files-cache"
 
 _client: CosmosClient | None = None
 
@@ -58,6 +59,10 @@ def get_messages_container() -> ContainerProxy:
     return _get_client().get_database_client(_DB_NAME).get_container_client(MESSAGES_CONTAINER)
 
 
+def get_files_container() -> ContainerProxy:
+    return _get_client().get_database_client(_DB_NAME).get_container_client(FILES_CACHE_CONTAINER)
+
+
 async def setup_cosmos() -> None:
     """Verify Cosmos DB connectivity.
 
@@ -79,7 +84,11 @@ async def setup_cosmos() -> None:
             id=MESSAGES_CONTAINER,
             partition_key=PartitionKey(path="/id"),
         )
-        logger.info("Cosmos DB: system-messages container ready")
+        await db.create_container_if_not_exists(
+            id=FILES_CACHE_CONTAINER,
+            partition_key=PartitionKey(path="/id"),
+        )
+        logger.info("Cosmos DB: system-messages + files-cache containers ready")
     except Exception as exc:
         logger.warning("Cosmos DB connectivity check failed: %s", exc)
 

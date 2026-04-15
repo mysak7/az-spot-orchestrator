@@ -12,7 +12,11 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
-    from cloud_init.vm_setup import generate_bare_cloud_init, generate_cloud_init
+    from cloud_init.vm_setup import (
+        generate_bare_cloud_init,
+        generate_cloud_init,
+        generate_cloud_init_with_files_mount,
+    )
     from config import get_settings
     from temporal.activities.azure import (
         delete_azure_vm,
@@ -21,7 +25,9 @@ with workflow.unsafe.imports_passed_through():
         wait_for_model_ready,
     )
     from temporal.activities.database import create_system_message, update_vm_status
+    from temporal.activities.files import check_files_share_ready
     from temporal.types import (
+        CheckFilesShareInput,
         CreateMessageInput,
         DeleteAzureVMInput,
         GetCheapestRegionInput,
@@ -93,21 +99,46 @@ class ProvisionVMWorkflow:
             region_prices = ranking.prices
 
         # ── Step 2: provision VM, falling back through regions on SkuNotAvailable ──
-        # Note: get_cheapest_region raises InsufficientSpotQuota (non_retryable) if
-        # the subscription's lowPriorityCores limit is too low for input.vm_size —
-        # that error propagates out of the loop below without trying any region.
-        cloud_init_b64 = generate_cloud_init(
-            model_identifier=input.model_identifier,
-            control_plane_url=settings.control_plane_url,
-            vm_name=input.vm_name,
-        )
-
         ip_address: str = ""
         region: str = ""
         last_error: BaseException | None = None
 
         for candidate in regions:
             try:
+                # Check if NFS Files share is ready in this region — use it if so
+                files_result = await workflow.execute_activity(
+                    check_files_share_ready,
+                    CheckFilesShareInput(
+                        model_identifier=input.model_identifier,
+                        region=candidate,
+                    ),
+                    start_to_close_timeout=timedelta(minutes=2),
+                    retry_policy=_FAST_RETRY,
+                )
+
+                if files_result.available:
+                    workflow.logger.info(
+                        "Using NFS Files mount for %s in %s (account=%s)",
+                        input.model_identifier, candidate, files_result.storage_account,
+                    )
+                    cloud_init_b64 = generate_cloud_init_with_files_mount(
+                        model_identifier=input.model_identifier,
+                        storage_account=files_result.storage_account,
+                        share_name=files_result.share_name,
+                        control_plane_url=settings.control_plane_url,
+                        vm_name=input.vm_name,
+                    )
+                else:
+                    workflow.logger.info(
+                        "No NFS share for %s in %s — using blob/Ollama path",
+                        input.model_identifier, candidate,
+                    )
+                    cloud_init_b64 = generate_cloud_init(
+                        model_identifier=input.model_identifier,
+                        control_plane_url=settings.control_plane_url,
+                        vm_name=input.vm_name,
+                    )
+
                 ip_address = await workflow.execute_activity(
                     provision_azure_vm,
                     ProvisionAzureVMInput(

@@ -120,3 +120,44 @@ class SeedBlobResult:
     region: str
     size_bytes: int
     duration_seconds: float
+
+
+@dataclass
+class EnsureFilesInfraInput:
+    region: str
+    resource_group: str
+
+
+@dataclass
+class EnsureFilesInfraResult:
+    storage_account: str
+    share_name: str
+    subnet_id: str
+
+
+@dataclass
+class SeedFilesInput:
+    model_identifier: str
+    region: str
+    resource_group: str
+
+
+@dataclass
+class SeedFilesResult:
+    model_identifier: str
+    region: str
+    size_bytes: int
+    duration_seconds: float
+
+
+@dataclass
+class CheckFilesShareInput:
+    model_identifier: str
+    region: str
+
+
+@dataclass
+class CheckFilesShareResult:
+    available: bool
+    storage_account: str = ""
+    share_name: str = ""

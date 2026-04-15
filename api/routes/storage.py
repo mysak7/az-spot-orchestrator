@@ -14,6 +14,7 @@ from schemas.api import (
     CopyBlobRequest,
     ModelCacheEntryResponse,
 )
+from services.files_cache import list_files_entries
 from services.model_cache import (
     delete_all_cache_entries,
     delete_all_cache_for_model,
@@ -22,9 +23,10 @@ from services.model_cache import (
     get_best_source,
     list_cache_entries,
 )
-from temporal.types import CopyBlobInput, SeedBlobInput
+from temporal.types import CopyBlobInput, SeedBlobInput, SeedFilesInput
 from temporal.workflows.blob_copy import CopyBlobWorkflow
 from temporal.workflows.seed_blob import SeedBlobWorkflow
+from temporal.workflows.seed_files import SeedFilesWorkflow
 
 logger = logging.getLogger(__name__)
 
@@ -186,3 +188,50 @@ async def delete_all_blobs() -> dict:
     except Exception as e:
         logger.error("Failed to delete all cache entries: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+# ── Azure Files NFS endpoints ──────────────────────────────────────────────────
+
+
+@router.post("/storage/files/seed", status_code=202)
+async def seed_files_share(req: CopyBlobRequest, temporal: TemporalClient) -> dict:
+    """Start a SeedFilesWorkflow to copy a model from blob storage to an Azure Files NFS share.
+
+    Once complete, VMs provisioned in that region will mount the share instead of
+    downloading the model — reducing boot-to-ready time from 15-45 min to ~2 min.
+
+    Requires the model blob to already exist (use /storage/cache/seed first).
+    """
+    s = get_settings()
+    safe_id = req.model_identifier.replace(":", "-").replace(".", "-")
+    workflow_id = f"seed-files-{safe_id}-{req.target_region}-{uuid.uuid4().hex[:8]}"
+    try:
+        await temporal.start_workflow(
+            SeedFilesWorkflow.run,
+            SeedFilesInput(
+                model_identifier=req.model_identifier,
+                region=req.target_region,
+                resource_group=s.azure_resource_group,
+            ),
+            id=workflow_id,
+            task_queue=s.temporal_task_queue,
+        )
+    except Exception as e:
+        logger.error("Failed to start SeedFilesWorkflow: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    logger.info(
+        "Seeding Files share for %s in %s (workflow %s)",
+        req.model_identifier, req.target_region, workflow_id,
+    )
+    return {"status": "accepted", "workflow_id": workflow_id}
+
+
+@router.get("/storage/files")
+async def list_files_shares_endpoint() -> list[dict]:
+    """List all Azure Files NFS shares with their seeding status."""
+    try:
+        entries = await list_files_entries()
+        return [e.model_dump() for e in entries]
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e

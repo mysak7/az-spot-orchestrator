@@ -407,6 +407,10 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
                             "name": subnet_name,
                             "address_prefix": "10.0.0.0/24",
                             "network_security_group": {"id": nsg.id},
+                            # Service endpoint needed for Azure Files NFS mounts
+                            "service_endpoints": [
+                                {"service": "Microsoft.Storage", "locations": [input.region]}
+                            ],
                         }
                     ],
                 },

@@ -17,9 +17,15 @@ from temporal.activities.azure import (
 )
 from temporal.activities.blob import copy_blob_to_region
 from temporal.activities.database import create_system_message, update_vm_status
+from temporal.activities.files import (
+    check_files_share_ready,
+    ensure_files_infrastructure,
+    seed_files_from_blob,
+)
 from temporal.activities.seed_blob import seed_blob_from_registry
 from temporal.workflows.blob_copy import CopyBlobWorkflow
 from temporal.workflows.seed_blob import SeedBlobWorkflow
+from temporal.workflows.seed_files import SeedFilesWorkflow
 from temporal.workflows.vm_provisioning import (
     DeleteVMWorkflow,
     LaunchBareVMWorkflow,
@@ -40,7 +46,14 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=settings.temporal_task_queue,
-        workflows=[ProvisionVMWorkflow, DeleteVMWorkflow, LaunchBareVMWorkflow, CopyBlobWorkflow, SeedBlobWorkflow],
+        workflows=[
+            ProvisionVMWorkflow,
+            DeleteVMWorkflow,
+            LaunchBareVMWorkflow,
+            CopyBlobWorkflow,
+            SeedBlobWorkflow,
+            SeedFilesWorkflow,
+        ],
         activities=[
             get_cheapest_region,
             provision_azure_vm,
@@ -50,6 +63,9 @@ async def main() -> None:
             create_system_message,
             copy_blob_to_region,
             seed_blob_from_registry,
+            ensure_files_infrastructure,
+            seed_files_from_blob,
+            check_files_share_ready,
         ],
     )
 

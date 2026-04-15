@@ -177,6 +177,119 @@ def generate_cloud_init(
     return base64.b64encode(yaml.encode()).decode()
 
 
+def generate_cloud_init_with_files_mount(
+    model_identifier: str,
+    storage_account: str,
+    share_name: str,
+    control_plane_url: str,
+    vm_name: str,
+) -> str:
+    """Return base64-encoded cloud-config for a VM that mounts model weights from Azure Files NFS.
+
+    The NFS share already has the model files; cloud-init just mounts it and starts Ollama.
+    Boot-to-ready time: ~2 min instead of 15-45 min (no download).
+
+    Args:
+        model_identifier: Ollama model tag — used only for the ready callback.
+        storage_account:  Azure FileStorage account name (e.g. "azspotfileswesteurope").
+        share_name:       NFS share name (always "models").
+        control_plane_url: Base URL for the ready callback.
+        vm_name:          Unique VM name for the ready callback and eviction monitor.
+    """
+    nfs_server = f"{storage_account}.file.core.windows.net"
+    nfs_path = f"/{storage_account}/{share_name}"
+
+    yaml = textwrap.dedent(f"""\
+        #cloud-config
+
+        write_files:
+          - path: /usr/local/bin/eviction-monitor.sh
+            permissions: '0755'
+            content: |
+              #!/bin/bash
+              IMDS_URL="http://169.254.169.254/metadata/scheduledevents?api-version=2020-07-01"
+              CONTROL_PLANE="{control_plane_url}"
+              VM_NAME="{vm_name}"
+              NOTIFIED=0
+
+              while true; do
+                EVENTS=$(curl -sf -H "Metadata: true" "$IMDS_URL" 2>/dev/null)
+                if [ $? -eq 0 ] && [ $NOTIFIED -eq 0 ]; then
+                  EVENT_TYPE=$(echo "$EVENTS" | python3 -c "
+              import sys, json
+              data = json.load(sys.stdin)
+              for e in data.get('Events', []):
+                  if e.get('EventType') == 'Preempt':
+                      print('Preempt')
+                      break
+              " 2>/dev/null)
+                  if [ "$EVENT_TYPE" = "Preempt" ]; then
+                    curl -sf -X POST "$CONTROL_PLANE/api/vms/$VM_NAME/evicted" \\
+                      -H "Content-Type: application/json" \\
+                      -d '{{"reason":"spot_preempt"}}' || true
+                    NOTIFIED=1
+                  fi
+                fi
+                sleep 15
+              done
+
+          - path: /etc/systemd/system/eviction-monitor.service
+            content: |
+              [Unit]
+              Description=Azure Spot eviction monitor
+              After=network-online.target
+              Wants=network-online.target
+
+              [Service]
+              Type=simple
+              ExecStart=/usr/local/bin/eviction-monitor.sh
+              Restart=always
+              RestartSec=5
+
+              [Install]
+              WantedBy=multi-user.target
+
+        packages:
+          - curl
+          - nfs-common
+
+        package_update: true
+
+        runcmd:
+          # Mount Azure Files NFS share — model files already present
+          - mkdir -p /mnt/ollama-files
+          - |
+            mount -t nfs -o vers=4,minorversion=1,sec=sys,nofail \
+              {nfs_server}:{nfs_path} /mnt/ollama-files
+
+          # Install Ollama
+          - curl -fsSL https://ollama.ai/install.sh | sh
+
+          # Override Ollama service: use NFS mount for models, listen on all interfaces
+          - mkdir -p /etc/systemd/system/ollama.service.d
+          - |
+            printf '[Service]\\nEnvironment="OLLAMA_MODELS=/mnt/ollama-files"\\nEnvironment="OLLAMA_HOST=0.0.0.0:11434"\\n' \
+              > /etc/systemd/system/ollama.service.d/override.conf
+          - systemctl daemon-reload
+          - systemctl enable ollama
+          - systemctl start ollama
+
+          - systemctl enable eviction-monitor
+          - systemctl start eviction-monitor
+
+          # Wait for Ollama to start, then notify control plane — no download needed
+          - |
+            for i in $(seq 1 30); do
+              curl -sf http://localhost:11434/api/tags > /dev/null && break
+              sleep 10
+            done
+            curl -sf -X POST {control_plane_url}/api/vms/{vm_name}/ready \
+              -H 'Content-Type: application/json' \
+              -d '{{"status":"running"}}' || true
+    """)
+    return base64.b64encode(yaml.encode()).decode()
+
+
 def generate_bare_cloud_init(vm_name: str, control_plane_url: str) -> str:
     """Return base64-encoded cloud-config YAML for a bare SSH-only Spot VM.
 
