@@ -398,7 +398,23 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
         nic = await nic_poller.result()
 
         # ── Spot VM ───────────────────────────────────────────────────────
-        image_sku = "22_04-lts-arm64" if _is_arm_vm_size(input.vm_size) else "22_04-lts"
+        if _is_arm_vm_size(input.vm_size):
+            image_sku = "22_04-lts-arm64"
+        else:
+            # Query SKU HyperVGenerations — Gen2-only sizes need the gen2 image.
+            # Falls back to "22_04-lts" (Gen1) on any API error.
+            image_sku = "22_04-lts"
+            try:
+                async for sku in comp.resource_skus.list(filter=f"name eq '{input.vm_size}'"):
+                    if sku.name == input.vm_size and sku.resource_type == "virtualMachines":
+                        for cap in sku.capabilities or []:
+                            if cap.name == "HyperVGenerations":
+                                if "V1" not in (cap.value or ""):
+                                    image_sku = "22_04-lts-gen2"
+                                break
+                        break
+            except Exception as _sku_err:
+                logger.warning("HyperVGenerations check failed, using Gen1 image: %s", _sku_err)
         logger.info("VM %s: size=%s → image sku=%s", input.vm_name, input.vm_size, image_sku)
         try:
             vm_poller = await comp.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]
