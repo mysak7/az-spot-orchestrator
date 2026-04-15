@@ -31,13 +31,23 @@ async def _warm_inventory_cache() -> None:
 
 
 async def _check_keep_alive_models(app: FastAPI) -> None:
-    """Provision a new VM for any keep_alive model that has no active VM."""
+    """Provision a new VM for any keep_alive model that has no healthy active VM.
+
+    A VM is considered healthy-active if it is in pending/provisioning/downloading/running
+    AND has not been stuck in a pre-running state for more than STALE_MINUTES.
+    Stale instances are marked 'terminated' so the watchdog (and the UI) can move on.
+    """
     import uuid
+    from datetime import UTC, datetime, timedelta
 
     from db.cosmos import get_instances_container, get_models_container
     from db.models import VMInstance, VMStatus
     from temporal.types import ProvisionVMInput
     from temporal.workflows.vm_provisioning import ProvisionVMWorkflow
+
+    # If a VM has been stuck in pending/provisioning/downloading for this long, treat
+    # it as dead (workflow never started or crashed without cleaning up).
+    STALE_MINUTES = 20
 
     settings = get_settings()
     models_container = get_models_container()
@@ -52,17 +62,55 @@ async def _check_keep_alive_models(app: FastAPI) -> None:
     if not keep_alive_models:
         return
 
-    # Collect model_ids that already have a non-terminal VM
+    now = datetime.now(UTC)
+
+    # Collect model_ids that already have a non-terminal, non-stale VM
     active_raw = [
         item
         async for item in instances_container.query_items(
             query=(
-                "SELECT c.model_id FROM c"
+                "SELECT * FROM c"
                 " WHERE c.status != 'evicted' AND c.status != 'terminated'"
             ),
         )
     ]
-    active_model_ids = {item["model_id"] for item in active_raw if item.get("model_id")}
+
+    active_model_ids: set[str] = set()
+    for item in active_raw:
+        mid = item.get("model_id")
+        if not mid:
+            continue
+        status = item.get("status", "")
+        if status == "running":
+            # Running VMs are always considered healthy.
+            active_model_ids.add(mid)
+            continue
+        # For pre-running states, check if the instance is stale.
+        created_raw = item.get("created_at") or item.get("updated_at")
+        if created_raw:
+            try:
+                created = datetime.fromisoformat(created_raw)
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=UTC)
+                age = now - created
+                if age < timedelta(minutes=STALE_MINUTES):
+                    active_model_ids.add(mid)
+                    continue
+            except ValueError:
+                active_model_ids.add(mid)
+                continue
+        # Stale non-running instance — mark terminated so the UI reflects reality.
+        item["status"] = VMStatus.terminated.value
+        item["updated_at"] = now.isoformat()
+        try:
+            await instances_container.replace_item(item=item["id"], body=item)
+            logger.warning(
+                "Keep-alive watchdog: marked stale instance '%s' (model=%s, was %s) as terminated",
+                item["id"], mid, status,
+            )
+        except Exception as exc:
+            logger.warning("Failed to mark stale instance terminated: %s", exc)
+            active_model_ids.add(mid)  # skip to avoid double-provisioning on error
 
     for model_item in keep_alive_models:
         model_id = model_item["id"]
