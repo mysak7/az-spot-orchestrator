@@ -1316,8 +1316,7 @@
         const sku = _skuMap[(vmSize).toLowerCase()] || {};
         const cpuStr = sku.vcpus != null ? `${sku.vcpus} vCPU` : null;
         const memStr = sku.memory_gb != null ? `${Number.isInteger(sku.memory_gb) ? sku.memory_gb : sku.memory_gb.toFixed(0)} GB` : null;
-        const invItem = _invData && _invData.items ? _invData.items.find(x => x.vm_size.toLowerCase() === vmSize.toLowerCase()) : null;
-        const priceStr = invItem && invItem.monthly_price_usd != null ? `~$${invItem.monthly_price_usd.toFixed(0)}/mo` : null;
+        const priceStr = sku.monthly_price_usd != null ? `~$${sku.monthly_price_usd.toFixed(0)}/mo` : null;
         const sub = [cpuStr, memStr, priceStr].filter(Boolean).join(' · ');
         return `<span class="mono" style="font-size:12px">${esc(vmSize)}</span>${sub ? `<br><span style="font-size:11px;color:var(--muted)">${sub}</span>` : ''}`;
       })();

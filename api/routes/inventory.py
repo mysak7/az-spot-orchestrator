@@ -385,10 +385,11 @@ async def get_sku_info(
             results[size] = {
                 "vcpus": info["vcpus"] if info else None,
                 "memory_gb": info["memory_gb"] if info else None,
+                "monthly_price_usd": info["monthly_price_usd"] if info else None,
             }
     else:
         for size in requested:
-            results[size] = {"vcpus": None, "memory_gb": None}
+            results[size] = {"vcpus": None, "memory_gb": None, "monthly_price_usd": None}
 
     return {"results": results, "from_cache": _cache is not None}
 
