@@ -36,7 +36,11 @@ class LLMModelResponse(BaseModel):
 
 
 class LLMModelPatch(BaseModel):
-    keep_alive: bool
+    description: str | None = None
+    size_mb: int | None = Field(None, gt=0)
+    model_identifier: str | None = None
+    vm_size: str | None = None
+    keep_alive: bool | None = None
 
 
 # ── VM Instance ────────────────────────────────────────────────────────────────
