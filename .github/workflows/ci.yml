@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches-ignore: [master]
+  pull_request:
+    branches: [master]
 
 jobs:
   # ── Lint ────────────────────────────────────────────────────────────────────
@@ -42,14 +44,9 @@ jobs:
         run: |
           pip install --no-cache-dir -r requirements.txt
           pip install mypy types-requests
-          pip install azure-cosmos-stubs azure-storage-blob-stubs || true  # stubs are best-effort
 
       - name: Run mypy
-        run: |
-          mypy . \
-            --ignore-missing-imports \
-            --exclude '\.venv|terraform|test_' \
-            --python-version 3.11
+        run: mypy .
 
   # ── Docker build ────────────────────────────────────────────────────────────
   docker-build:
