@@ -133,6 +133,11 @@ class ProvisionVMWorkflow:
                         input.vm_size,
                         candidate,
                     )
+                    # Compute next region before cleanup so memo is set when
+                    # delete_azure_vm runs (visible in live status polling).
+                    next_regions = regions[regions.index(candidate) + 1:]
+                    next_region = next_regions[0] if next_regions else None
+                    workflow.upsert_memo({"failover_from": candidate, "failover_to": next_region or ""})
                     # Clean up partial resources before trying next region
                     await workflow.execute_activity(
                         delete_azure_vm,
@@ -144,8 +149,6 @@ class ProvisionVMWorkflow:
                         retry_policy=_FAST_RETRY,
                     )
                     # Emit a warning message with price comparison
-                    next_regions = regions[regions.index(candidate) + 1:]
-                    next_region = next_regions[0] if next_regions else None
                     failed_price = region_prices.get(candidate)
                     next_price = region_prices.get(next_region) if next_region else None
                     if failed_price and next_price:
@@ -318,6 +321,11 @@ class LaunchBareVMWorkflow:
                         input.vm_size,
                         candidate,
                     )
+                    # Compute next region before cleanup so memo is set when
+                    # delete_azure_vm runs (visible in live status polling).
+                    next_regions = regions[regions.index(candidate) + 1:]
+                    next_region = next_regions[0] if next_regions else None
+                    workflow.upsert_memo({"failover_from": candidate, "failover_to": next_region or ""})
                     await workflow.execute_activity(
                         delete_azure_vm,
                         DeleteAzureVMInput(
@@ -328,8 +336,6 @@ class LaunchBareVMWorkflow:
                         retry_policy=_FAST_RETRY,
                     )
                     # Emit a warning message with price comparison
-                    next_regions = regions[regions.index(candidate) + 1:]
-                    next_region = next_regions[0] if next_regions else None
                     failed_price = region_prices.get(candidate)
                     next_price = region_prices.get(next_region) if next_region else None
                     if failed_price and next_price:

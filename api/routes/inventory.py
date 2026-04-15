@@ -539,7 +539,19 @@ _ACTIVITY_LABELS: dict[str, str] = {
 }
 
 
-def _activity_info(pending: list) -> dict | None:
+def _decode_memo_str(payload: object) -> str | None:
+    """Decode a Temporal memo Payload field to a plain string."""
+    import json as _json
+    try:
+        data = getattr(payload, "data", None)
+        if data:
+            return _json.loads(data)
+    except Exception:
+        pass
+    return None
+
+
+def _activity_info(pending: list, memo_fields: dict | None = None) -> dict | None:
     """Extract current activity details from Temporal pending_activities list."""
     if not pending:
         return None
@@ -560,9 +572,22 @@ def _activity_info(pending: list) -> dict | None:
     if lf:
         last_failure_msg = getattr(lf, "message", None) or str(lf)
 
+    # Build display label — enrich delete_azure_vm with region context from memo.
+    if name == "delete_azure_vm" and memo_fields:
+        failover_from = _decode_memo_str(memo_fields.get("failover_from"))
+        failover_to = _decode_memo_str(memo_fields.get("failover_to"))
+        if failover_from and failover_to:
+            display = f"Cleaning up {failover_from}, trying {failover_to}..."
+        elif failover_from:
+            display = f"Cleaning up {failover_from}..."
+        else:
+            display = _ACTIVITY_LABELS["delete_azure_vm"]
+    else:
+        display = _ACTIVITY_LABELS.get(name, name.replace("_", " ").title() + "...")
+
     return {
         "name": name,
-        "display": _ACTIVITY_LABELS.get(name, name.replace("_", " ").title() + "..."),
+        "display": display,
         "attempt": attempt,
         "state": state_str,
         "last_failure": last_failure_msg,
@@ -628,10 +653,18 @@ async def get_bare_vm_status(workflow_id: str, request: FastAPIRequest) -> dict:
             return {"workflow_id": workflow_id, "status": "cancelled", "current_activity": None}
 
         # Still running — expose current activity
+        memo_fields: dict | None = None
+        try:
+            memo_fields = dict(desc.raw_description.workflow_execution_info.memo.fields)
+        except Exception:
+            pass
         return {
             "workflow_id": workflow_id,
             "status": "provisioning",
-            "current_activity": _activity_info(list(desc.raw_description.pending_activities) or []),
+            "current_activity": _activity_info(
+                list(desc.raw_description.pending_activities) or [],
+                memo_fields=memo_fields,
+            ),
         }
 
     except RPCError as exc:
