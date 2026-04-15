@@ -2,12 +2,15 @@
 
 Downloads all model layers directly from registry.ollama.ai (no VM needed),
 packs them into a tar.lz4 archive (lz4 is much faster than gzip for already-
-compressed GGUF weights), and uploads to the target-region blob container.
+compressed GGUF weights), and streams the archive directly to Azure Blob Storage
+without writing it to disk — allowing large models to be seeded on machines with
+limited free disk space (only the downloaded layers need to fit, not layers + archive).
 """
 
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import shutil
@@ -77,53 +80,67 @@ async def _download_layer(
                         await on_bytes(len(chunk))
 
 
-def _build_tar_lz4(models_dir: Path, tar_lz4_path: Path) -> int:
-    """Pack *models_dir* into an lz4-compressed tar and return the file size in bytes.
+async def _stream_archive_upload(bc: object, models_dir: Path) -> int:
+    """Stream a tar.lz4 archive of *models_dir* directly to Azure Blob Storage.
 
-    lz4 is orders of magnitude faster than gzip for this workload — GGUF model
-    weights are already in a semi-compressed format, so gzip gains very little
-    while consuming significant CPU time (minutes for 20 GB models).
+    The archive is created in a thread and piped to the uploader via an asyncio
+    Queue — no temp file is written.  This means only the downloaded layer files
+    need to fit on disk (not layers + archive), halving the required free space
+    for large models.
+
+    Returns the number of compressed bytes uploaded (the blob size).
     """
-    with lz4.frame.open(tar_lz4_path, "wb") as lz4_fh:
-        with tarfile.open(fileobj=lz4_fh, mode="w|") as tar:
-            tar.add(models_dir, arcname="models")
-    return tar_lz4_path.stat().st_size
+    loop = asyncio.get_running_loop()
+    # Sentinel for end-of-stream; exceptions are forwarded through the queue too.
+    queue: asyncio.Queue[bytes | Exception | None] = asyncio.Queue(maxsize=8)
+    size_bytes = 0
 
+    class _QueueWriter(io.RawIOBase):
+        """Synchronous writer that forwards lz4-compressed chunks to the async queue."""
 
-async def _archive_with_heartbeat(models_dir: Path, tar_lz4_path: Path) -> int:
-    """Run lz4 tar creation in a thread pool while heartbeating so Temporal doesn't time out.
+        def write(self, b: bytes | bytearray | memoryview) -> int:  # type: ignore[override]
+            chunk = bytes(b)
+            asyncio.run_coroutine_threadsafe(queue.put(chunk), loop).result()
+            return len(chunk)
 
-    Without heartbeating during this phase, large models (e.g. 20 GB) can exceed
-    the 5-minute heartbeat_timeout and be incorrectly killed by Temporal.
-    """
+        def writable(self) -> bool:
+            return True
+
+    def _build_archive() -> None:
+        try:
+            writer = _QueueWriter()
+            with lz4.frame.open(writer, "wb") as lz4_fh:
+                with tarfile.open(fileobj=lz4_fh, mode="w|") as tar:
+                    tar.add(models_dir, arcname="models")
+            asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
+        except Exception as exc:
+            asyncio.run_coroutine_threadsafe(queue.put(exc), loop).result()
+
+    async def _chunks() -> Any:
+        nonlocal size_bytes
+        while True:
+            item = await queue.get()
+            if item is None:
+                return
+            if isinstance(item, Exception):
+                raise item
+            size_bytes += len(item)
+            yield item
 
     async def _heartbeat_loop() -> None:
         while True:
-            activity.heartbeat("archiving model files (lz4)")
+            activity.heartbeat("streaming tar.lz4 to blob storage")
             await asyncio.sleep(30)
 
-    task = asyncio.create_task(_heartbeat_loop())
-    loop = asyncio.get_running_loop()
+    heartbeat_task = asyncio.create_task(_heartbeat_loop())
+    archive_future = loop.run_in_executor(None, _build_archive)
     try:
-        return await loop.run_in_executor(None, _build_tar_lz4, models_dir, tar_lz4_path)
+        await bc.upload_blob(_chunks(), overwrite=True, blob_type="BlockBlob")  # type: ignore[attr-defined]
     finally:
-        task.cancel()
+        heartbeat_task.cancel()
 
-
-async def _upload_with_heartbeat(bc: object, tar_path: Path) -> None:
-    """Upload blob to Azure Storage, heartbeating every 30 s so Temporal doesn't time out."""
-
-    async def _heartbeat() -> None:
-        while True:
-            activity.heartbeat("uploading to blob storage")
-            await asyncio.sleep(30)
-
-    task = asyncio.create_task(_heartbeat())
-    try:
-        with tar_path.open("rb") as fh:
-            await bc.upload_blob(fh, overwrite=True, blob_type="BlockBlob")  # type: ignore[attr-defined]
-    finally:
-        task.cancel()
+    await archive_future  # surface any exception from the archive thread
+    return size_bytes
 
 
 @activity.defn
@@ -215,18 +232,15 @@ async def seed_blob_from_registry(input: SeedBlobInput) -> SeedBlobResult:
             if total_bytes > 0:
                 await update_download_progress(model_identifier, region, 100)
 
-        # ── Archive ─────────────────────────────────────────────────────────────
-        await update_upload_phase(model_identifier, region, "archiving")
-        tar_lz4_path = tmpdir / "model.tar.lz4"
-        start = time.monotonic()
-        size_bytes = await _archive_with_heartbeat(tmpdir / "models", tar_lz4_path)
-
-        # ── Upload ──────────────────────────────────────────────────────────────
+        # ── Stream archive directly to Azure (no temp file needed) ─────────────
+        # Streaming eliminates the need for a second copy of the model on disk —
+        # only the downloaded layers (~model size) need to fit, not layers + archive.
         await update_upload_phase(model_identifier, region, "uploading")
         blob = _blob_name(model_identifier, region)
+        start = time.monotonic()
         async with blob_service_client() as az:
             bc = az.get_blob_client(container=s.azure_storage_container_name, blob=blob)
-            await _upload_with_heartbeat(bc, tar_lz4_path)
+            size_bytes = await _stream_archive_upload(bc, tmpdir / "models")
 
         duration = time.monotonic() - start
         await register_upload_complete(model_identifier, region, size_bytes, duration)
