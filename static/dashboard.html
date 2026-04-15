@@ -268,6 +268,15 @@
 
   .modal h3 { font-size: 16px; margin-bottom: 20px; }
 
+  .opt-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .opt-table th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; padding: 0 8px 8px; border-bottom: 1px solid var(--border); }
+  .opt-table td { padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .opt-table tr:last-child td { border-bottom: none; }
+  .opt-table tr.opt-applied td { opacity: 0.45; }
+  .sku-arrow { color: var(--muted); margin: 0 6px; }
+  .sku-new { color: var(--green, #4caf50); font-weight: 600; }
+  .sku-same { color: var(--muted); font-style: italic; }
+
   .form-group { margin-bottom: 16px; }
 
   label {
@@ -850,7 +859,11 @@
           <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
         </svg>
         <h2>Model Catalog</h2>
-        <button class="btn btn-primary" style="margin-left:auto" onclick="openRegisterModal()">
+        <button class="btn btn-ghost" style="margin-left:auto" onclick="openOptimizeModal()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+          Optimize SKUs
+        </button>
+        <button class="btn btn-primary" onclick="openRegisterModal()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
           Add to Catalog
         </button>
@@ -1154,6 +1167,25 @@
         <button type="submit" class="btn btn-primary" id="edit-submit-btn">Save</button>
       </div>
     </form>
+  </div>
+</div>
+
+<!-- ── Optimize SKUs Modal ── -->
+<div class="modal-backdrop" id="optimize-modal" onclick="handleBackdropClick(event)">
+  <div class="modal" style="width:min(760px,95vw)">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+      <h3 style="margin:0">Optimize VM SKUs</h3>
+      <span style="margin-left:auto;font-size:12px;color:var(--muted)" id="optimize-inv-note"></span>
+    </div>
+    <p style="font-size:13px;color:var(--muted);margin:0 0 16px">
+      Cheapest spot VM whose memory fits each model's weights (×1.2 headroom). GPU preferred over CPU.
+      Apply changes one by one.
+    </p>
+    <div id="optimize-body"></div>
+    <div class="modal-actions" style="margin-top:20px">
+      <button type="button" class="btn btn-ghost" onclick="closeOptimizeModal()">Close</button>
+    </div>
   </div>
 </div>
 
@@ -1817,10 +1849,11 @@
   function handleBackdropClick(e) {
     if (e.target === document.getElementById('register-modal')) closeRegisterModal();
     if (e.target === document.getElementById('edit-modal')) closeEditModal();
+    if (e.target === document.getElementById('optimize-modal')) closeOptimizeModal();
   }
 
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { closeRegisterModal(); closeEditModal(); }
+    if (e.key === 'Escape') { closeRegisterModal(); closeEditModal(); closeOptimizeModal(); }
   });
 
   function openEditModal(model) {
@@ -1864,6 +1897,93 @@
     } finally {
       btn.disabled = false;
       btn.textContent = 'Save';
+    }
+  }
+
+  // ── Optimize SKUs ──────────────────────────────────────────────────────────
+
+  function _suggestSku(model) {
+    if (!_invData || !_invData.items || !_invData.items.length) return null;
+    const neededGb = (model.size_mb / 1024) * 1.2;
+    const candidates = _invData.items.filter(i => i.memory_gb != null && i.memory_gb >= neededGb);
+    if (!candidates.length) return null;
+    // GPU preferred, then cheapest
+    candidates.sort((a, b) => {
+      const ag = a.gpu ? 0 : 1, bg = b.gpu ? 0 : 1;
+      if (ag !== bg) return ag - bg;
+      return (a.best_price_usd ?? 9999) - (b.best_price_usd ?? 9999);
+    });
+    return candidates[0];
+  }
+
+  function openOptimizeModal() {
+    const invLoaded = _invData && _invData.items && _invData.items.length > 0;
+    document.getElementById('optimize-inv-note').textContent = invLoaded
+      ? `Using live pricing (${_invData.items.length} SKUs)`
+      : 'Load Spot Inventory first for accurate suggestions';
+
+    const body = document.getElementById('optimize-body');
+
+    if (!_models.length) {
+      body.innerHTML = '<p style="color:var(--muted);font-size:13px">No models in catalog.</p>';
+      document.getElementById('optimize-modal').classList.add('open');
+      return;
+    }
+
+    const rows = _models.map(m => {
+      const sug = _suggestSku(m);
+      const isSame = sug && sug.vm_size === m.vm_size;
+      const sugCell = !sug
+        ? `<span class="muted" style="font-size:12px">— no fit found</span>`
+        : isSame
+          ? `<span class="sku-same">${esc(sug.vm_size)} (current)</span>`
+          : `<span class="sku-new mono">${esc(sug.vm_size)}</span>
+             <br><span style="font-size:11px;color:var(--muted)">
+               ${sug.gpu ? sug.gpu + ' · ' : ''}${sug.vcpus != null ? sug.vcpus + ' vCPU · ' : ''}${sug.memory_gb != null ? Math.round(sug.memory_gb) + ' GB · ' : ''}${sug.best_price_usd != null ? '$' + sug.best_price_usd.toFixed(4) + '/hr' : ''}
+             </span>`;
+      const canApply = sug && !isSame;
+      return `<tr id="opt-row-${esc(m.id)}">
+        <td><strong>${esc(m.name)}</strong><br><span style="font-size:11px;color:var(--muted)">${fmtSize(m.size_mb)}</span></td>
+        <td class="mono" style="font-size:12px;color:var(--muted)">${esc(m.vm_size)}</td>
+        <td>${sugCell}</td>
+        <td style="white-space:nowrap">
+          ${canApply
+            ? `<button class="btn btn-primary" style="font-size:12px;padding:4px 10px" onclick="applyOptimizedSku('${esc(m.id)}','${esc(sug.vm_size)}',this)">Apply</button>`
+            : `<span style="font-size:12px;color:var(--muted)">—</span>`}
+        </td>
+      </tr>`;
+    }).join('');
+
+    body.innerHTML = `<table class="opt-table">
+      <thead><tr>
+        <th>Model</th><th>Current SKU</th><th>Suggested SKU</th><th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+    document.getElementById('optimize-modal').classList.add('open');
+  }
+
+  function closeOptimizeModal() {
+    document.getElementById('optimize-modal').classList.remove('open');
+  }
+
+  async function applyOptimizedSku(modelId, vmSize, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Applying…';
+    try {
+      await apiFetch(`/api/models/${modelId}`, { method: 'PATCH', body: JSON.stringify({ vm_size: vmSize }) });
+      const row = document.getElementById(`opt-row-${modelId}`);
+      if (row) {
+        row.classList.add('opt-applied');
+        btn.textContent = '✓ Applied';
+      }
+      refresh();
+      toast(`SKU updated to ${vmSize}`, 'success');
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Apply';
+      toast(`Failed: ${err.message}`, 'error');
     }
   }
 
