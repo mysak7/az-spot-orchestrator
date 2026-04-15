@@ -319,6 +319,44 @@ async def delete_cache_entry(model_identifier: str, region: str) -> None:
         logger.warning("Could not delete blob %s: %s", blob, e)
 
 
+async def delete_all_cache_for_model(model_identifier: str) -> int:
+    """Delete all cache entries (all regions) for a given model. Returns count deleted."""
+    container = get_cache_container()
+    query = "SELECT * FROM c WHERE c.model_identifier = @model_id"
+    items: list[ModelCacheEntry] = []
+    async for item in container.query_items(
+        query=query,
+        parameters=[{"name": "@model_id", "value": model_identifier}],
+    ):
+        items.append(ModelCacheEntry(**item))
+
+    count = 0
+    for entry in items:
+        try:
+            await delete_cache_entry(entry.model_identifier, entry.region)
+            count += 1
+        except Exception as e:
+            logger.warning("Failed to delete %s/%s: %s", model_identifier, entry.region, e)
+    return count
+
+
+async def delete_all_cache_entries() -> int:
+    """Delete every cache entry across all models and regions. Returns count deleted."""
+    container = get_cache_container()
+    items: list[ModelCacheEntry] = []
+    async for item in container.query_items(query="SELECT * FROM c"):
+        items.append(ModelCacheEntry(**item))
+
+    count = 0
+    for entry in items:
+        try:
+            await delete_cache_entry(entry.model_identifier, entry.region)
+            count += 1
+        except Exception as e:
+            logger.warning("Failed to delete %s/%s: %s", entry.model_identifier, entry.region, e)
+    return count
+
+
 async def list_cache_entries() -> list[ModelCacheEntry]:
     """List all cached models with their metadata."""
     container = get_cache_container()

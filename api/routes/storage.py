@@ -15,6 +15,8 @@ from schemas.api import (
     ModelCacheEntryResponse,
 )
 from services.model_cache import (
+    delete_all_cache_entries,
+    delete_all_cache_for_model,
     delete_cache_entry,
     find_best_copy_source,
     get_best_source,
@@ -142,4 +144,26 @@ async def delete_blob_entry(model_identifier: str, region: str) -> dict:
         return {"status": "deleted", "model_identifier": model_identifier, "region": region}
     except Exception as e:
         logger.error("Failed to delete cache entry: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.delete("/storage/cache/model")
+async def delete_all_model_blobs(model_identifier: str) -> dict:
+    """Delete all cached blobs for a given model across every region."""
+    try:
+        count = await delete_all_cache_for_model(model_identifier)
+        return {"status": "deleted", "model_identifier": model_identifier, "count": count}
+    except Exception as e:
+        logger.error("Failed to delete all cache entries for %s: %s", model_identifier, e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.delete("/storage/cache/all")
+async def delete_all_blobs() -> dict:
+    """Delete all cached blobs across every model and region."""
+    try:
+        count = await delete_all_cache_entries()
+        return {"status": "deleted", "count": count}
+    except Exception as e:
+        logger.error("Failed to delete all cache entries: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e

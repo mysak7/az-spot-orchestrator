@@ -829,6 +829,10 @@
           <path d="M3 12a9 3 0 0 0 18 0"/>
         </svg>
         <h2>Blob Cache</h2>
+        <button class="btn btn-danger" style="margin-left:auto;font-size:12px;padding:4px 12px" onclick="deleteAllCaches()">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+          Delete all caches
+        </button>
       </div>
 
       <div style="margin-bottom:20px">
@@ -844,6 +848,10 @@
           <div style="margin-left:auto;display:flex;gap:8px">
             <button class="btn btn-ghost" style="font-size:12px;padding:3px 10px" onclick="checkAllCacheRegions(true)">Check all</button>
             <button class="btn btn-ghost" style="font-size:12px;padding:3px 10px" onclick="checkAllCacheRegions(false)">Uncheck all</button>
+            <button class="btn btn-danger" style="font-size:12px;padding:3px 10px" onclick="deleteAllCachesForModel()">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+              Delete all
+            </button>
             <button id="cache-confirm-btn" class="btn btn-primary" style="font-size:12px;padding:3px 12px" disabled onclick="confirmCacheRegions()">Confirm</button>
           </div>
         </div>
@@ -1339,6 +1347,29 @@
     if (check) _cacheRegions.forEach(r => _pendingRegions.add(r));
     else _pendingRegions.clear();
     renderCacheRegionPanel();
+  }
+
+  async function deleteAllCachesForModel() {
+    if (!_selectedCacheModel) return;
+    if (!confirm(`Delete ALL cached blobs for ${_selectedCacheModel} across every region? This cannot be undone.`)) return;
+    try {
+      await apiFetch(`/api/storage/cache/model?model_identifier=${encodeURIComponent(_selectedCacheModel)}`, { method: 'DELETE' });
+      toast(`Deleted all caches for ${_selectedCacheModel}`, 'success');
+      refresh();
+    } catch (err) {
+      toast(`Failed to delete caches for ${_selectedCacheModel}: ${err.message}`, 'error');
+    }
+  }
+
+  async function deleteAllCaches() {
+    if (!confirm('Delete ALL cached blobs across every model and region? This cannot be undone.')) return;
+    try {
+      const res = await apiFetch('/api/storage/cache/all', { method: 'DELETE' });
+      toast(`Deleted ${res.count} cache entr${res.count === 1 ? 'y' : 'ies'}`, 'success');
+      refresh();
+    } catch (err) {
+      toast(`Failed to delete all caches: ${err.message}`, 'error');
+    }
   }
 
   async function confirmCacheRegions() {
