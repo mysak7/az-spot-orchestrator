@@ -692,9 +692,11 @@ async def get_bare_vm_status(workflow_id: str, request: FastAPIRequest) -> dict:
             memo_fields = dict(desc.raw_description.workflow_execution_info.memo.fields)
         except Exception:
             pass
+        resolved_region = _decode_memo_str(memo_fields.get("region")) if memo_fields else None
         return {
             "workflow_id": workflow_id,
             "status": "provisioning",
+            "region": resolved_region,
             "current_activity": _activity_info(
                 list(desc.raw_description.pending_activities) or [],
                 memo_fields=memo_fields,

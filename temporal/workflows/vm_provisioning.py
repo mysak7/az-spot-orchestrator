@@ -122,6 +122,7 @@ class ProvisionVMWorkflow:
                     retry_policy=RetryPolicy(maximum_attempts=1),
                 )
                 region = candidate
+                workflow.upsert_memo({"region": region})
                 break
             except ActivityError as exc:
                 if (
@@ -310,6 +311,7 @@ class LaunchBareVMWorkflow:
                     retry_policy=RetryPolicy(maximum_attempts=1),
                 )
                 region = candidate
+                workflow.upsert_memo({"region": region})
                 break
             except ActivityError as exc:
                 cause = exc.__cause__

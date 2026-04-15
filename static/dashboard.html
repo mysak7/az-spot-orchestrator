@@ -2654,6 +2654,8 @@
           started_at: _activeJobs[workflowId].started_at,
           logs: _activeJobs[workflowId].logs,
           last_activity: act || _activeJobs[workflowId].last_activity,
+          // Only overwrite region when the API has resolved it (null means still pending)
+          region: res.region || _activeJobs[workflowId].region,
         };
         _persistJobs();
         _renderJobs();
