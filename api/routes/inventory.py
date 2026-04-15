@@ -676,3 +676,25 @@ async def get_bare_vm_status(workflow_id: str, request: FastAPIRequest) -> dict:
     except Exception as exc:
         logger.error("Unexpected error polling workflow %s: %s", workflow_id, exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.delete("/inventory/bare-vms/{workflow_id}", status_code=200)
+async def cancel_bare_vm_workflow(workflow_id: str, request: FastAPIRequest) -> dict:
+    """Cancel a running bare VM launch workflow."""
+    from datetime import timedelta
+
+    from temporalio.service import RPCError, RPCStatusCode
+
+    temporal_client = request.app.state.temporal_client
+    try:
+        handle = temporal_client.get_workflow_handle(workflow_id)
+        await handle.cancel(rpc_timeout=timedelta(seconds=5))
+        logger.info("Cancelled workflow %s", workflow_id)
+        return {"workflow_id": workflow_id, "status": "cancelled"}
+    except RPCError as exc:
+        if exc.status in (RPCStatusCode.UNAVAILABLE, RPCStatusCode.DEADLINE_EXCEEDED):
+            raise HTTPException(status_code=503, detail="Temporal unavailable") from exc
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Unexpected error cancelling workflow %s: %s", workflow_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
