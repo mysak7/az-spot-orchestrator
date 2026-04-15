@@ -537,7 +537,7 @@ async def wait_for_model_ready(input: WaitForModelInput) -> None:
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         while elapsed < deadline_s:
-            activity.heartbeat(f"elapsed={elapsed}s ip={input.ip_address}")
+            activity.heartbeat({"elapsed": elapsed, "timeout": deadline_s, "ip": input.ip_address})
             try:
                 resp = await client.get(f"http://{input.ip_address}:11434/api/tags")
                 if resp.status_code == 200:

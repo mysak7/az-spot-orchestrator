@@ -677,6 +677,53 @@
 
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  /* ── Job step progress bar ── */
+  .job-step-bar {
+    margin-top: 8px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .job-step-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--blue);
+    transition: width 2s linear;
+  }
+
+  .job-step-bar-fill.indeterminate {
+    width: 40% !important;
+    animation: indeterminate-slide 1.8s ease-in-out infinite;
+    background: var(--blue);
+  }
+
+  @keyframes indeterminate-slide {
+    0%   { transform: translateX(-150%); }
+    100% { transform: translateX(350%); }
+  }
+
+  .job-source-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--muted);
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    white-space: nowrap;
+  }
+
+  .job-step-elapsed {
+    font-size: 11px;
+    color: var(--muted);
+    margin-left: auto;
+    white-space: nowrap;
+  }
+
   /* ── Keep-alive toggle switch ── */
   .toggle-wrap {
     display: flex;
@@ -1270,6 +1317,14 @@
     return sec >= 60 ? `${(sec / 60).toFixed(1)} min` : `${sec.toFixed(0)} s`;
   }
 
+  function fmtStepElapsed(sec) {
+    if (sec == null || sec < 0) return null;
+    const s = Math.round(sec);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60), rs = s % 60;
+    return `${m}m ${rs.toString().padStart(2,'0')}s`;
+  }
+
   function statusBadge(status, phase) {
     const cls = {
       pending:      'badge-pending',
@@ -1782,6 +1837,7 @@
         region: null,
         status: 'provisioning',
         model_name: name,
+        model_identifier: model?.model_identifier || null,
       });
       refresh();
     } catch (err) {
@@ -1824,6 +1880,7 @@
             region: null,
             status: 'provisioning',
             model_name: name,
+            model_identifier: m?.model_identifier || null,
           });
           navigate('vms');
           refresh();
@@ -2434,18 +2491,70 @@
       }
       // provisioning
       const elapsed = Math.round((Date.now() - j.started_at) / 1000);
-      const actDisplay = j.current_activity?.display || 'Initialising workflow...';
-      const attempt    = j.current_activity?.attempt;
+      const act      = j.current_activity;
+      const actName  = act?.name || '';
+      const actDisplay = act?.display || 'Initialising workflow...';
+      const attempt    = act?.attempt;
       const attemptTxt = attempt > 1 ? ` <span style="color:var(--yellow)">(attempt ${attempt})</span>` : '';
+      const hb         = act?.heartbeat_data;
+      const stepSec    = act?.step_elapsed_seconds;
+
+      // ── Progress bar ─────────────────────────────────────────────────────
+      let progressBar = '';
+      if (actName === 'wait_for_model_ready') {
+        const hbElapsed = hb?.elapsed ?? null;
+        const hbTimeout = hb?.timeout ?? 2700;
+        if (hbElapsed !== null) {
+          const pct = Math.min(Math.round(hbElapsed / hbTimeout * 100), 99);
+          progressBar = `<div class="job-step-bar"><div class="job-step-bar-fill" style="width:${pct}%"></div></div>`;
+        } else {
+          // No heartbeat yet — indeterminate
+          progressBar = `<div class="job-step-bar"><div class="job-step-bar-fill indeterminate"></div></div>`;
+        }
+      } else if (actName && actName !== 'update_vm_status') {
+        progressBar = `<div class="job-step-bar"><div class="job-step-bar-fill indeterminate"></div></div>`;
+      }
+
+      // ── Download source tag ───────────────────────────────────────────────
+      let sourceTag = '';
+      if (actName === 'wait_for_model_ready' && j.model_identifier) {
+        const region = j.region || '';
+        const hasBlob = _cacheEntries.some(
+          e => e.model_identifier === j.model_identifier && e.region === region && e.status === 'available'
+        );
+        if (region && hasBlob) {
+          sourceTag = `<span class="job-source-tag">⚡ Blob Cache · ${esc(region)}</span>`;
+        } else {
+          sourceTag = `<span class="job-source-tag">↓ Ollama Registry</span>`;
+        }
+      }
+
+      // ── Per-step elapsed ──────────────────────────────────────────────────
+      // Prefer heartbeat elapsed (reported by VM) for wait_for_model_ready,
+      // fall back to server-computed step_elapsed_seconds for other activities.
+      let stepElapsedTag = '';
+      const stepElapsedSec = (actName === 'wait_for_model_ready' && hb?.elapsed != null)
+        ? hb.elapsed
+        : stepSec;
+      if (stepElapsedSec != null) {
+        const fmt = fmtStepElapsed(stepElapsedSec);
+        if (fmt) stepElapsedTag = `<span class="job-step-elapsed">step: ${fmt}</span>`;
+      }
+
       return `<div class="job-card">
         <div class="job-card-header">
           <div class="spinner"></div>
           <span class="job-name">${esc(j.vm_name)}</span>
           <span class="job-detail">${esc(j.vm_size)} · ${esc(j.region || 'auto')}</span>
-          <span class="job-detail">${elapsed}s</span>
+          <span class="job-detail">${fmtStepElapsed(elapsed) || elapsed + 's'} total</span>
           <button class="btn btn-danger" style="font-size:12px;padding:3px 8px;margin-left:auto" onclick="killJob('${esc(j.workflow_id)}')">Kill</button>
         </div>
-        <div style="margin-top:8px;font-size:12px;color:var(--blue)">${esc(actDisplay)}${attemptTxt}</div>
+        <div style="margin-top:8px;font-size:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="color:var(--blue)">${esc(actDisplay)}${attemptTxt}</span>
+          ${sourceTag}
+          ${stepElapsedTag}
+        </div>
+        ${progressBar}
         ${_renderJobLog(j.logs)}
       </div>`;
     }).join('');
@@ -2475,7 +2584,15 @@
         const prev = job.last_activity;
         if (act) {
           if (!prev || prev.name !== act.name) {
-            _addLog(workflowId, act.display);
+            // Log completion of previous step with its duration
+            if (prev && prev.name && prev.name !== 'update_vm_status') {
+              const prevSec = prev.step_elapsed_seconds;
+              const prevFmt = prevSec != null ? ` (${fmtStepElapsed(Math.round(prevSec)) || Math.round(prevSec) + 's'})` : '';
+              _addLog(workflowId, `✓ ${prev.display.replace(/\.\.\.$/, '')}${prevFmt}`, 'ok');
+            }
+            if (act.name !== 'update_vm_status') {
+              _addLog(workflowId, act.display);
+            }
           }
           if (act.last_failure && act.attempt > 1 && (!prev || prev.attempt !== act.attempt)) {
             _addLog(workflowId,
@@ -2493,6 +2610,11 @@
         _activeJobs[workflowId] = {
           ..._activeJobs[workflowId],
           ...res,
+          // Preserve fields the poll response doesn't carry back
+          model_identifier: _activeJobs[workflowId].model_identifier,
+          model_name: _activeJobs[workflowId].model_name,
+          vm_size: _activeJobs[workflowId].vm_size,
+          started_at: _activeJobs[workflowId].started_at,
           logs: _activeJobs[workflowId].logs,
           last_activity: act || _activeJobs[workflowId].last_activity,
         };

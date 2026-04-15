@@ -557,6 +557,9 @@ def _decode_memo_str(payload: object) -> str | None:
 
 def _activity_info(pending: list, memo_fields: dict | None = None) -> dict | None:
     """Extract current activity details from Temporal pending_activities list."""
+    import json as _json
+    from datetime import UTC, datetime
+
     if not pending:
         return None
     act = pending[0]
@@ -587,12 +590,41 @@ def _activity_info(pending: list, memo_fields: dict | None = None) -> dict | Non
     else:
         display = _ACTIVITY_LABELS.get(name, name.replace("_", " ").title() + "...")
 
+    # ── Heartbeat data ────────────────────────────────────────────────────────
+    heartbeat_data: dict | None = None
+    try:
+        payloads = getattr(act, "heartbeat_details", None)
+        if payloads and hasattr(payloads, "payloads") and payloads.payloads:
+            raw = payloads.payloads[0].data
+            parsed = _json.loads(raw)
+            if isinstance(parsed, dict):
+                heartbeat_data = parsed
+    except Exception:
+        pass
+
+    # ── Per-step elapsed (seconds since last_started_time) ────────────────────
+    step_elapsed_seconds: float | None = None
+    try:
+        last_started = getattr(act, "last_started_time", None)
+        if last_started is not None:
+            # Temporal protobuf Timestamp → datetime
+            if hasattr(last_started, "ToDatetime"):
+                dt = last_started.ToDatetime(tzinfo=UTC)
+            else:
+                dt = last_started  # already a datetime
+            if dt:
+                step_elapsed_seconds = (datetime.now(UTC) - dt).total_seconds()
+    except Exception:
+        pass
+
     return {
         "name": name,
         "display": display,
         "attempt": attempt,
         "state": state_str,
         "last_failure": last_failure_msg,
+        "heartbeat_data": heartbeat_data,
+        "step_elapsed_seconds": step_elapsed_seconds,
     }
 
 
