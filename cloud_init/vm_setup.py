@@ -156,7 +156,7 @@ def generate_cloud_init(
             # --- Ollama fallback: pull model ---
             if [ "$SOURCE" = "ollama" ]; then
               echo "=== Pulling model from Ollama ==="
-              if ! ollama pull {model_identifier}; then
+              if ! HOME=/root OLLAMA_HOST=http://localhost:11434 ollama pull {model_identifier}; then
                 echo "ERROR: Model pull failed"
                 exit 1
               fi

@@ -37,7 +37,8 @@ def _get_client() -> CosmosClient:
                 "COSMOS_ENDPOINT is not configured. "
                 "Set it in your .env file or environment variables."
             )
-        _client = CosmosClient(url=s.cosmos_endpoint, credential=DefaultAzureCredential())
+        credential = s.cosmos_key if s.cosmos_key else DefaultAzureCredential()
+        _client = CosmosClient(url=s.cosmos_endpoint, credential=credential)
     return _client
 
 

@@ -63,6 +63,7 @@ class Settings(BaseSettings):
 
     # Azure Cosmos DB
     cosmos_endpoint: str = ""
+    cosmos_key: str = ""
 
     # Azure (auth via managed identity — DefaultAzureCredential, no secrets needed)
     azure_subscription_id: str = ""
