@@ -546,18 +546,9 @@
   th.sort-asc::after  { content: " ▲"; font-size: 10px; }
   th.sort-desc::after { content: " ▼"; font-size: 10px; }
 
-  /* ── Bare VM jobs panel ── */
+  /* ── VM jobs panel (Logs page) ── */
   .jobs-panel {
-    margin-top: 24px;
-  }
-
-  .jobs-panel h3 {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    margin-bottom: 10px;
+    margin-top: 8px;
   }
 
   .job-card {
@@ -732,6 +723,19 @@
       </svg>
       Spot Inventory
     </button>
+
+    <div class="nav-section-label">System</div>
+
+    <button class="nav-item" data-page="logs" onclick="navigate('logs')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+        <polyline points="10 9 9 9 8 9"/>
+      </svg>
+      Logs
+      <span class="nav-badge" id="nav-logs-count" style="display:none">0</span>
+    </button>
   </nav>
 
   <!-- ── Main content ── -->
@@ -747,11 +751,6 @@
         <h2>VM Instances</h2>
       </div>
 
-      <!-- Active provisioning jobs -->
-      <div class="jobs-panel" id="jobs-panel" style="display:none">
-        <h3>Active VM Jobs</h3>
-        <div id="jobs-list"></div>
-      </div>
 
       <div class="filter-bar">
         <input type="text" id="inst-search" placeholder="Search VM name or model…" oninput="filterInstances()">
@@ -932,6 +931,22 @@
         <div class="inv-loading">Select "Spot Inventory" to load prices from the Azure Retail API…</div>
       </div>
 
+    </div>
+
+    <!-- ── Logs page ── -->
+    <div class="page" id="page-logs">
+      <div class="page-header">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+        </svg>
+        <h2>Logs</h2>
+      </div>
+      <div class="jobs-panel" id="jobs-panel">
+        <div id="jobs-list"></div>
+      </div>
+      <div id="jobs-empty" style="color:var(--muted);font-size:13px;padding:32px 0;text-align:center">No VM jobs yet.</div>
     </div>
 
   </main>
@@ -1867,11 +1882,19 @@
   }
 
   function _renderJobs() {
-    const panel = document.getElementById('jobs-panel');
     const list  = document.getElementById('jobs-list');
-    const jobs  = Object.values(_activeJobs);
-    if (!jobs.length) { panel.style.display = 'none'; return; }
-    panel.style.display = '';
+    const empty = document.getElementById('jobs-empty');
+    // Newest first: sort by started_at descending
+    const jobs  = Object.values(_activeJobs).sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
+
+    // Nav badge
+    const badge = document.getElementById('nav-logs-count');
+    const active = jobs.filter(j => j.status !== 'running' && j.status !== 'failed' && j.status !== 'cancelled').length;
+    if (active > 0) { badge.textContent = active; badge.style.display = ''; }
+    else { badge.style.display = 'none'; }
+
+    if (!jobs.length) { list.innerHTML = ''; if (empty) empty.style.display = ''; return; }
+    if (empty) empty.style.display = 'none';
 
     list.innerHTML = jobs.map(j => {
       if (j.status === 'running') {
