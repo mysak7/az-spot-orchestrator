@@ -39,18 +39,21 @@ def _is_arm_vm_size(vm_size: str) -> bool:
 
 async def _filter_sku_available_regions(
     vm_size: str, candidate_regions: list[str]
-) -> tuple[list[str], int]:
+) -> tuple[list[str], int, str]:
     """Remove regions where vm_size is quota-restricted or not offered.
 
     Uses the Azure Resource SKUs API to check subscription-level restrictions.
     On any API error the original list is returned unchanged.
 
-    Returns (available_regions, vcpu_count) where vcpu_count is the number of
-    vCPUs for vm_size (0 if not determinable).
+    Returns (available_regions, vcpu_count, vm_family) where vcpu_count is the
+    number of vCPUs for vm_size (0 if not determinable) and vm_family is the
+    Azure family string from SKU capabilities (e.g. 'standardNCASv3_T4Family'),
+    used to check family-specific low-priority quota.
     """
     restricted: set[str] = set()
     region_lower: dict[str, str] = {r.lower(): r for r in candidate_regions}
     vcpu_count: int = 0
+    vm_family: str = ""
 
     try:
         async with compute_client() as comp:
@@ -58,15 +61,16 @@ async def _filter_sku_available_regions(
             async for sku in skus:
                 if sku.name != vm_size or sku.resource_type != "virtualMachines":
                     continue
-                # Extract vCPU count from SKU capabilities (same for all regions)
-                if vcpu_count == 0:
+                # Extract vCPU count and VM family from SKU capabilities (same for all regions)
+                if vcpu_count == 0 or not vm_family:
                     for cap in sku.capabilities or []:
-                        if cap.name == "vCPUs":
+                        if cap.name == "vCPUs" and vcpu_count == 0:
                             try:
                                 vcpu_count = int(cap.value)
                             except (TypeError, ValueError):
                                 pass
-                            break
+                        elif cap.name == "Family" and not vm_family:
+                            vm_family = cap.value or ""
                 loc_raw: str = (sku.locations or [None])[0] or ""
                 matched = region_lower.get(loc_raw.lower())
                 if not matched:
@@ -84,22 +88,24 @@ async def _filter_sku_available_regions(
                         break
     except Exception as exc:  # noqa: BLE001
         logger.warning("SKU availability check failed, using all regions: %s", exc)
-        return candidate_regions, vcpu_count
+        return candidate_regions, vcpu_count, vm_family
 
     available = [r for r in candidate_regions if r not in restricted]
     if restricted:
         logger.info(
             "Regions after SKU filter: %s (removed: %s)", available, sorted(restricted)
         )
-    return (available if available else candidate_regions), vcpu_count
+    return (available if available else candidate_regions), vcpu_count, vm_family
 
 
-async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str) -> bool:
+async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str, vm_family: str = "") -> bool:
     """Return True if this region has enough Spot quota for vcpu_count cores.
 
-    lowPriorityCores quota is per-region (per subscription per region) — checking
-    it here lets get_cheapest_region filter out regions with insufficient headroom
-    rather than aborting the entire workflow on the first exhausted region.
+    Checks two quota dimensions:
+    1. Global lowPriorityCores — per-region Spot vCPU ceiling.
+    2. Family-specific low-priority quota (e.g. standardNCASv3_T4FamilyLowPriorityVCPUs)
+       — critical for GPU families which have a separate per-family limit that is 0
+       by default on pay-as-you-go subscriptions.
 
     Returns True on any API error so the caller doesn't skip potentially valid regions.
     """
@@ -107,24 +113,56 @@ async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str) -> bool:
         logger.warning("vCPU count unknown for %s — skipping Spot quota check for %s", vm_size, region)
         return True
 
+    # Build the expected family-level low-priority usage name, e.g.
+    # "standardNCASv3_T4Family" → "standardNCASv3_T4FamilyLowPriorityVCPUs"
+    family_lp_key = (vm_family + "LowPriorityVCPUs").lower() if vm_family else ""
+
     try:
+        global_ok: bool | None = None
+        family_ok: bool | None = None
+
         async with compute_client() as comp:
             usages = comp.usage.list(location=region)
             async for usage in usages:
-                if (getattr(usage.name, "value", None) or "").lower() == "lowprioritycores":
-                    limit: int = usage.limit or 0
-                    current: int = usage.current_value or 0
-                    remaining = limit - current
+                usage_key = (getattr(usage.name, "value", None) or "").lower()
+                limit: int = usage.limit or 0
+                current: int = usage.current_value or 0
+                remaining = limit - current
+
+                if usage_key == "lowprioritycores":
                     logger.info(
                         "Spot quota in %s (lowPriorityCores): limit=%d used=%d remaining=%d, need=%d",
-                        region,
-                        limit,
-                        current,
-                        remaining,
-                        vcpu_count,
+                        region, limit, current, remaining, vcpu_count,
                     )
-                    return vcpu_count <= remaining
-        logger.warning("LowPriorityCores usage not found in region %s — skipping quota check", region)
+                    global_ok = vcpu_count <= remaining
+
+                elif family_lp_key and usage_key == family_lp_key:
+                    logger.info(
+                        "Spot quota in %s (%s): limit=%d used=%d remaining=%d, need=%d",
+                        region, usage.name.value, limit, current, remaining, vcpu_count,
+                    )
+                    if limit == 0:
+                        logger.warning(
+                            "VM family %s has 0 low-priority quota in %s — "
+                            "GPU families require a quota increase on pay-as-you-go subscriptions "
+                            "(aka.ms/AzurePortalQuota)",
+                            vm_family, region,
+                        )
+                    family_ok = vcpu_count <= remaining
+
+                if global_ok is not None and (not family_lp_key or family_ok is not None):
+                    break  # collected everything we need
+
+        if global_ok is None:
+            logger.warning("LowPriorityCores usage not found in region %s — skipping quota check", region)
+
+        # Both checks must pass when applicable
+        if global_ok is False:
+            return False
+        if family_ok is False:
+            return False
+        return True
+
     except Exception as exc:  # noqa: BLE001
         logger.warning("Spot quota check failed for %s, proceeding anyway: %s", region, exc)
     return True  # fail open
@@ -199,20 +237,21 @@ async def get_cheapest_region(input: GetCheapestRegionInput) -> list[str]:
     back to them.
     """
     # ── 1. SKU availability filter + vCPU count ──────────────────────────
-    available, vcpu_count = await _filter_sku_available_regions(
+    available, vcpu_count, vm_family = await _filter_sku_available_regions(
         input.vm_size, list(input.candidate_regions)
     )
+    if vm_family:
+        logger.info("VM family for %s: %s", input.vm_size, vm_family)
 
     # ── 1b. Per-region Spot quota filter ─────────────────────────────────
-    # lowPriorityCores quota is per-region — check each region individually
-    # and exclude those without enough headroom. This is a best-effort filter:
-    # if ALL regions report insufficient quota (e.g. subscription limit < VM vCPUs)
-    # we fall back to the full available list and let the provisioner handle the
-    # Azure-level rejection per-region rather than hard-blocking here.
+    # Checks both the global lowPriorityCores limit and the family-specific
+    # low-priority quota (critical for GPU sizes that default to 0 on PAYG subs).
+    # If ALL regions report insufficient quota we fall back to the full available
+    # list and let the provisioner handle Azure-level rejection per-region.
     if vcpu_count > 0 and available:
         quota_ok = []
         for r in available:
-            if await _check_spot_quota(input.vm_size, vcpu_count, r):
+            if await _check_spot_quota(input.vm_size, vcpu_count, r, vm_family):
                 quota_ok.append(r)
             else:
                 logger.info("Region %s excluded: insufficient Spot quota for %s (%d vCPUs)", r, input.vm_size, vcpu_count)
@@ -220,11 +259,12 @@ async def get_cheapest_region(input: GetCheapestRegionInput) -> list[str]:
             available = quota_ok
         else:
             logger.warning(
-                "All regions report insufficient lowPriorityCores quota for %s (%d vCPUs) — "
+                "All regions report insufficient Spot quota for %s (%d vCPUs, family=%s) — "
                 "proceeding anyway; provisioner will handle Azure-level rejection. "
                 "Consider requesting a quota increase at aka.ms/AzurePortalQuota.",
                 input.vm_size,
                 vcpu_count,
+                vm_family or "unknown",
             )
 
     prices: dict[str, float] = {}
