@@ -365,6 +365,34 @@ def _build_inventory(
     }
 
 
+@router.get("/inventory/sku-info")
+async def get_sku_info(
+    sizes: str = Query(..., description="Comma-separated Azure VM sizes, e.g. Standard_NC4as_T4_v3"),
+) -> dict:
+    """Return vCPUs and memory_gb for the requested VM sizes.
+
+    Data is sourced from the in-process inventory cache (populated by the spot-prices
+    endpoint). Returns null values for sizes not yet in the cache — load the inventory
+    page first or pass ?refresh=true to the spot-prices endpoint to warm the cache.
+    """
+    requested = [s.strip() for s in sizes.split(",") if s.strip()]
+    results: dict[str, dict] = {}
+
+    if _cache:
+        items_by_size = {item["vm_size"].lower(): item for item in _cache[1]["items"]}
+        for size in requested:
+            info = items_by_size.get(size.lower())
+            results[size] = {
+                "vcpus": info["vcpus"] if info else None,
+                "memory_gb": info["memory_gb"] if info else None,
+            }
+    else:
+        for size in requested:
+            results[size] = {"vcpus": None, "memory_gb": None}
+
+    return {"results": results, "from_cache": _cache is not None}
+
+
 @router.get("/inventory/spot-prices")
 async def get_spot_inventory(
     family: str | None = Query(None, description="Filter by VM family prefix, e.g. NC, D, E"),

@@ -997,6 +997,7 @@
 <script>
   const API = '';
   let _models = [];
+  let _skuMap = {};  // vm_size.lower() → {vcpus, memory_gb}
   let _currentPage = 'vms';
   let _cacheEntries = [];
   let _cacheRegions = [];
@@ -1192,7 +1193,16 @@
         <td class="muted">${esc(m.description || '—')}</td>
         <td class="mono">${fmtSize(m.size_mb)}</td>
         <td class="mono">${esc(m.model_identifier)}</td>
-        <td class="mono muted">${esc(m.vm_size)}</td>
+        <td class="mono muted">
+          ${esc(m.vm_size)}
+          ${(() => {
+            const sku = _skuMap[m.vm_size.toLowerCase()] || {};
+            const cpuStr = sku.vcpus != null ? `${sku.vcpus} vCPU` : null;
+            const memStr = sku.memory_gb != null ? `${Number.isInteger(sku.memory_gb) ? sku.memory_gb : sku.memory_gb.toFixed(0)} GB` : null;
+            const parts = [cpuStr, memStr].filter(Boolean);
+            return parts.length ? `<br><span style="font-size:11px;color:var(--muted);font-weight:400">${parts.join(' · ')}</span>` : '';
+          })()}
+        </td>
         <td>${statusCell}</td>
         <td>
           <label class="toggle" title="Keep LLM always alive — auto-provision if VM is gone">
@@ -1490,6 +1500,18 @@
         apiFetch('/api/instances'),
         apiFetch('/api/storage/cache'),
       ]);
+      // Enrich model VM sizes with vCPU / memory data from the inventory cache
+      const uniqueSizes = [...new Set(models.map(m => m.vm_size).filter(Boolean))];
+      if (uniqueSizes.length) {
+        try {
+          const skuData = await apiFetch('/api/inventory/sku-info?sizes=' + encodeURIComponent(uniqueSizes.join(',')));
+          if (skuData.results) {
+            Object.entries(skuData.results).forEach(([size, info]) => {
+              _skuMap[size.toLowerCase()] = info;
+            });
+          }
+        } catch (_) { /* non-fatal — SKU info is best-effort */ }
+      }
       renderInstances(instances);  // must run before renderModels so _instancesAll is populated
       renderModels(models);
       renderCache(cache);
