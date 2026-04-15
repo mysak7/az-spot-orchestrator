@@ -136,14 +136,17 @@ async def _fetch_region(client: httpx.AsyncClient, region: str) -> list[dict]:
 
 async def _fetch_subscription_available(
     candidate_regions: list[str],
-) -> tuple[dict[str, set[str]], dict[str, int]]:
-    """Return (available, vcpu_counts) for VM sizes with no subscription restrictions.
+) -> tuple[dict[str, set[str]], dict[str, int], dict[str, str]]:
+    """Return (available, vcpu_counts, vm_family_map) for VM sizes with no subscription restrictions.
 
     available: {region → set of lower-cased vm_size strings} — sizes that pass
       the per-region SKU restriction check (NotAvailableForSubscription / QuotaId).
     vcpu_counts: {lower-cased vm_size → vCPU count} collected from SKU capabilities.
+    vm_family_map: {lower-cased vm_size → family_lp_key} e.g.
+      "standard_nc4as_t4_v3" → "standardncasv3_t4familylowprioritycores" used to
+      cross-reference family-level low-priority quota from the usage API.
 
-    On any error returns ({}, {}) so the caller skips the filter rather than
+    On any error returns ({}, {}, {}) so the caller skips the filter rather than
     showing a blank page.
     """
     from services.azure_client import compute_client
@@ -151,6 +154,7 @@ async def _fetch_subscription_available(
     available: dict[str, set[str]] = {r: set() for r in candidate_regions}
     region_set_lower = {r.lower(): r for r in candidate_regions}
     vcpu_counts: dict[str, int] = {}
+    vm_family_map: dict[str, str] = {}
 
     try:
         async with compute_client() as comp:
@@ -164,15 +168,20 @@ async def _fetch_subscription_available(
                 if not vm_size_lower:
                     continue
 
-                # Collect vCPU count once per vm_size from SKU capabilities
-                if vm_size_lower not in vcpu_counts:
+                # Collect vCPU count and Family once per vm_size from SKU capabilities
+                if vm_size_lower not in vcpu_counts or vm_size_lower not in vm_family_map:
                     for cap in sku.capabilities or []:
-                        if cap.name == "vCPUs":
+                        if cap.name == "vCPUs" and vm_size_lower not in vcpu_counts:
                             try:
                                 vcpu_counts[vm_size_lower] = int(cap.value)
                             except (TypeError, ValueError):
                                 pass
-                            break
+                        elif cap.name == "Family" and vm_size_lower not in vm_family_map:
+                            # e.g. "standardNCASv3_T4Family" (lowercased) — used as prefix to match
+                            # usage API keys like "standardncasv3_t4familylowpriority"
+                            family_val = (cap.value or "").strip()
+                            if family_val:
+                                vm_family_map[vm_size_lower] = family_val.lower()
 
                 for loc in sku.locations or []:
                     canonical = region_set_lower.get(loc.lower())
@@ -199,9 +208,40 @@ async def _fetch_subscription_available(
         logger.warning(
             "Subscription SKU check failed — showing all priced VMs: %s", exc
         )
-        return {}, {}
+        return {}, {}, {}
 
-    return available, vcpu_counts
+    return available, vcpu_counts, vm_family_map
+
+
+async def _fetch_zero_lp_quota_families(candidate_regions: list[str]) -> dict[str, set[str]]:
+    """Return {region → set of family_lp_keys} where the low-priority quota limit is 0.
+
+    e.g. {"eastus": {"standardncasv3_t4familylowprioritycores"}}
+
+    On any error returns {} so the caller skips this filter.
+    """
+    from services.azure_client import compute_client
+
+    zero_families: dict[str, set[str]] = {}
+
+    async def _check_region(region: str) -> None:
+        try:
+            async with compute_client() as comp:
+                usages = comp.usage.list(location=region)
+                async for usage in usages:
+                    key = (getattr(usage.name, "value", None) or "").lower()
+                    # Collect family-specific LP quota entries (not the global "lowprioritycores")
+                    # that have a 0 limit — e.g. "standardncasv3_t4familylowpriority"
+                    if "lowpriority" in key and key != "lowprioritycores" and (usage.limit or 0) == 0:
+                        zero_families.setdefault(region, set()).add(key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LP quota check failed for %s: %s", region, exc)
+
+    await asyncio.gather(*[_check_region(r) for r in candidate_regions])
+
+    if zero_families:
+        logger.info("Regions with zero GPU LP quota families: %s", {r: list(v) for r, v in zero_families.items()})
+    return zero_families
 
 
 
@@ -236,18 +276,22 @@ def _build_inventory(
     rows: list[dict],
     available_skus: dict[str, set[str]],
     vcpu_counts: dict[str, int],
+    vm_family_map: dict[str, str] | None = None,
+    zero_lp_families: dict[str, set[str]] | None = None,
 ) -> dict:
     """Build the inventory dict from raw price rows.
 
     available_skus: {region → set_of_vm_size_lower} from the Resource SKUs API.
     vcpu_counts: {vm_size_lower → vCPU count} from SKU capabilities.
+    vm_family_map: {vm_size_lower → family_lp_key} used with zero_lp_families.
+    zero_lp_families: {region → set of family_lp_keys with 0 quota} — (vm_size, region)
+      pairs whose family has no low-priority quota are excluded from the inventory.
 
     The SKU filter is skipped when unavailable so the page still shows
-    something useful on API errors. Spot quota is NOT filtered here —
-    lowPriorityCores is per-region, so the provisioning activity checks it
-    per-region at provision time.
+    something useful on API errors.
     """
     skip_sku_filter = not available_skus
+    skip_quota_filter = not vm_family_map or not zero_lp_families
 
     # vm_size → region → best_price
     pricing: dict[str, dict[str, float]] = {}
@@ -265,6 +309,16 @@ def _build_inventory(
         if not skip_sku_filter:
             region_set = available_skus.get(region, set())
             if vm_size_lower not in region_set:
+                continue
+
+        # Drop (vm_size, region) pairs whose GPU family has 0 low-priority quota.
+        # vm_family_map stores e.g. "standardncasv3_t4family"; zero_lp_families stores
+        # usage keys like "standardncasv3_t4familylowpriority" — match by prefix.
+        if not skip_quota_filter:
+            family_lower = vm_family_map.get(vm_size_lower, "")  # type: ignore[union-attr]
+            if family_lower and any(
+                k.startswith(family_lower) for k in zero_lp_families.get(region, set())  # type: ignore[union-attr]
+            ):
                 continue
 
         bucket = pricing.setdefault(vm_size, {})
@@ -313,12 +367,13 @@ async def get_spot_inventory(
         try:
             from config import get_settings
             regions = list(get_settings().azure_candidate_regions)
-            # Fetch prices and SKU availability in parallel
-            rows, (available_skus, vcpu_counts) = await asyncio.gather(
+            # Fetch prices, SKU availability, and LP quota in parallel
+            rows, (available_skus, vcpu_counts, vm_family_map), zero_lp_families = await asyncio.gather(
                 _fetch_raw_spot_prices(regions),
                 _fetch_subscription_available(regions),
+                _fetch_zero_lp_quota_families(regions),
             )
-            payload = _build_inventory(rows, available_skus, vcpu_counts)
+            payload = _build_inventory(rows, available_skus, vcpu_counts, vm_family_map, zero_lp_families)
             _cache = (now, payload)
         except Exception as exc:
             logger.error("Failed to fetch Spot prices: %s", exc)

@@ -113,9 +113,9 @@ async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str, vm_famil
         logger.warning("vCPU count unknown for %s — skipping Spot quota check for %s", vm_size, region)
         return True
 
-    # Build the expected family-level low-priority usage name, e.g.
-    # "standardNCASv3_T4Family" → "standardNCASv3_T4FamilyLowPriorityVCPUs"
-    family_lp_key = (vm_family + "LowPriorityVCPUs").lower() if vm_family else ""
+    # Family prefix used for prefix-matching usage keys, e.g. "standardncasv3_t4family"
+    # matches usage keys like "standardncasv3_t4familylowpriority"
+    family_lower = vm_family.lower() if vm_family else ""
 
     try:
         global_ok: bool | None = None
@@ -136,7 +136,12 @@ async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str, vm_famil
                     )
                     global_ok = vcpu_count <= remaining
 
-                elif family_lp_key and usage_key == family_lp_key:
+                elif (
+                    family_lower
+                    and "lowpriority" in usage_key
+                    and usage_key != "lowprioritycores"
+                    and usage_key.startswith(family_lower)
+                ):
                     logger.info(
                         "Spot quota in %s (%s): limit=%d used=%d remaining=%d, need=%d",
                         region, usage.name.value, limit, current, remaining, vcpu_count,
@@ -150,7 +155,7 @@ async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str, vm_famil
                         )
                     family_ok = vcpu_count <= remaining
 
-                if global_ok is not None and (not family_lp_key or family_ok is not None):
+                if global_ok is not None and (not family_lower or family_ok is not None):
                     break  # collected everything we need
 
         if global_ok is None:
