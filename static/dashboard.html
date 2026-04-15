@@ -1447,7 +1447,8 @@
         <td>${statusBadge(i.status)}</td>
         <td class="muted">${esc(i.region || '—')}</td>
         <td class="mono" style="font-size:12px">${i.ip_address
-          ? `<a href="http://${esc(i.ip_address)}:11434" target="_blank" style="color:var(--blue);text-decoration:none">${esc(i.ip_address)}</a>`
+          ? `<a href="http://${esc(i.ip_address)}:11434" target="_blank" style="color:var(--blue);text-decoration:none">${esc(i.ip_address)}</a>
+             <button class="btn btn-ghost" title="Copy SSH command" style="padding:1px 5px;font-size:11px;margin-left:4px;color:var(--muted)" onclick="navigator.clipboard.writeText('ssh azureuser@${esc(i.ip_address)}').then(()=>toast('Copied: ssh azureuser@${esc(i.ip_address)}','success'))">SSH</button>`
           : '<span class="muted">—</span>'
         }</td>
         <td>${skuCell}</td>
