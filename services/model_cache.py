@@ -34,7 +34,8 @@ _REGION_COORDS: dict[str, tuple[float, float]] = {
     "westus2": (47.3, -119.9),  # Washington
     "eastus2": (36.7, -77.5),  # Virginia
     "westeurope": (52.3, 4.8),  # Amsterdam
-    "northeurope": (60.5, 13.0),  # Dublin/Stockholm area
+    "northeurope": (53.3, -6.3),  # Dublin
+    "swedencentral": (60.7, 17.1),  # Gävle
     "southeastasia": (1.4, 103.8),  # Singapore
     "australiaeast": (-33.8, 151.2),  # Sydney
     "japaneast": (35.6, 139.7),  # Tokyo

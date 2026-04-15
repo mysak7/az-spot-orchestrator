@@ -79,7 +79,7 @@ class Settings(BaseSettings):
 
     # Azure region where the control plane itself runs.  Used as the default
     # seed target — blob uploads go to nearby storage → faster, cheaper egress.
-    control_plane_region: str = "westeurope"
+    control_plane_region: str = "swedencentral"
 
     # VM provisioning defaults
     default_vm_size: str = "Standard_NC4as_T4_v3"
