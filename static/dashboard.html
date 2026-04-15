@@ -1225,16 +1225,26 @@
 
   // ── Fetch helpers ──────────────────────────────────────────────────────────
   async function apiFetch(path, opts = {}) {
-    const res = await fetch(API + path, {
-      headers: { 'Content-Type': 'application/json' },
-      ...opts,
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.detail || `HTTP ${res.status}`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const res = await fetch(API + path, {
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        ...opts,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
+      if (res.status === 204) return null;
+      return res.json();
+    } catch (err) {
+      if (err.name === 'AbortError') throw new Error('Request timed out');
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    if (res.status === 204) return null;
-    return res.json();
   }
 
   // ── Utilities ──────────────────────────────────────────────────────────────
@@ -2368,12 +2378,18 @@
   }
 
   async function _pollJob(workflowId) {
+    const MAX_ERRORS = 5;
+    let consecutiveErrors = 0;
+    let pollInterval = 3000;
+
     while (true) {
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, pollInterval));
       const job = _activeJobs[workflowId];
       if (!job || job.status === 'running' || job.status === 'failed' || job.status === 'cancelled') break;
       try {
         const res = await apiFetch(`/api/inventory/bare-vms/${encodeURIComponent(workflowId)}`);
+        consecutiveErrors = 0;
+        pollInterval = 3000;
 
         // Append log entries when activity changes or on retry
         const act = res.current_activity;
@@ -2410,7 +2426,16 @@
         }
         if (res.status === 'failed' || res.status === 'cancelled') break;
       } catch (err) {
-        _addLog(workflowId, `Poll error: ${err.message}`, 'warn');
+        consecutiveErrors++;
+        if (consecutiveErrors >= MAX_ERRORS) {
+          _addLog(workflowId, `Polling stopped after ${MAX_ERRORS} consecutive errors — server may be down`, 'error');
+          _activeJobs[workflowId] = { ..._activeJobs[workflowId], status: 'failed' };
+          _persistJobs();
+          _renderJobs();
+          break;
+        }
+        pollInterval = Math.min(pollInterval * 2, 30000);
+        _addLog(workflowId, `Poll error: ${err.message} (retry ${consecutiveErrors}/${MAX_ERRORS})`, 'warn');
         _renderJobs();
       }
     }
