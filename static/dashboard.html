@@ -866,16 +866,14 @@
 
       <div class="filter-bar">
         <input type="text" id="inst-search" placeholder="Search VM name or model…" oninput="filterInstances()">
-        <select id="inst-status-filter" onchange="filterInstances()">
-          <option value="" selected>All statuses</option>
-          <option value="running">Running</option>
-          <option value="provisioning">Provisioning</option>
-          <option value="downloading">Downloading</option>
-          <option value="pending">Pending</option>
-          <option value="evicted">Evicted</option>
-          <option value="terminated">Terminated</option>
-          <option value="failed">Failed</option>
-        </select>
+        <label><input type="checkbox" id="inst-filter-all" onchange="onInstFilterAll(this)"> All</label>
+        <label><input type="checkbox" class="inst-status-cb" value="pending"       onchange="onInstFilterCb()" checked> Pending</label>
+        <label><input type="checkbox" class="inst-status-cb" value="provisioning"  onchange="onInstFilterCb()"> Provisioning</label>
+        <label><input type="checkbox" class="inst-status-cb" value="downloading"   onchange="onInstFilterCb()"> Downloading</label>
+        <label><input type="checkbox" class="inst-status-cb" value="running"       onchange="onInstFilterCb()" checked> Running</label>
+        <label><input type="checkbox" class="inst-status-cb" value="evicted"       onchange="onInstFilterCb()"> Evicted</label>
+        <label><input type="checkbox" class="inst-status-cb" value="terminated"    onchange="onInstFilterCb()"> Terminated</label>
+        <label><input type="checkbox" class="inst-status-cb" value="failed"        onchange="onInstFilterCb()"> Failed</label>
       </div>
 
       <div class="card">
@@ -1367,14 +1365,37 @@
     _applyInstanceFilters();
   }
 
+  function _instCheckedStatuses() {
+    return new Set(
+      [...document.querySelectorAll('.inst-status-cb:checked')].map(cb => cb.value)
+    );
+  }
+
+  function _syncInstFilterAll() {
+    const cbs = document.querySelectorAll('.inst-status-cb');
+    const allChecked = [...cbs].every(cb => cb.checked);
+    document.getElementById('inst-filter-all').checked = allChecked;
+  }
+
+  function onInstFilterAll(allCb) {
+    document.querySelectorAll('.inst-status-cb').forEach(cb => { cb.checked = allCb.checked; });
+    _applyInstanceFilters();
+  }
+
+  function onInstFilterCb() {
+    _syncInstFilterAll();
+    _applyInstanceFilters();
+  }
+
   function filterInstances() {
+    _syncInstFilterAll();
     _applyInstanceFilters();
   }
 
   function _applyInstanceFilters() {
     const tbody = document.getElementById('instances-tbody');
     const search = document.getElementById('inst-search').value.toLowerCase();
-    const statusFilter = document.getElementById('inst-status-filter').value;
+    const activeStatuses = _instCheckedStatuses();
 
     // Update sortable header classes
     document.querySelectorAll('#page-vms th.sortable').forEach(th => {
@@ -1386,7 +1407,7 @@
 
     let items = _instancesAll.slice();
 
-    if (statusFilter) items = items.filter(i => i.status === statusFilter);
+    if (activeStatuses.size > 0) items = items.filter(i => activeStatuses.has(i.status));
     if (search) items = items.filter(i =>
       (i.vm_name || '').toLowerCase().includes(search) ||
       (i.model_name || '').toLowerCase().includes(search)
