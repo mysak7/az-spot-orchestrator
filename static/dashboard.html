@@ -280,7 +280,7 @@
 
   label .hint { font-weight: 400; color: var(--muted); margin-left: 4px; }
 
-  input, textarea {
+  input, textarea, select {
     width: 100%;
     background: var(--bg);
     border: 1px solid var(--border);
@@ -293,7 +293,7 @@
     transition: border-color 0.15s;
   }
 
-  input:focus, textarea:focus { border-color: var(--blue); }
+  input:focus, textarea:focus, select:focus { border-color: var(--blue); }
 
   .modal-actions {
     display: flex;
@@ -980,7 +980,9 @@
 
       <div class="form-group">
         <label>VM SKU <span class="hint">— Azure VM size</span></label>
-        <input type="text" name="vm_size" required value="Standard_NC4as_T4_v3">
+        <select name="vm_size" id="register-vm-sku" required>
+          <option value="Standard_NC4as_T4_v3">Standard_NC4as_T4_v3</option>
+        </select>
       </div>
 
       <div class="modal-actions">
@@ -1595,10 +1597,32 @@
   }
 
   // ── Register Modal ─────────────────────────────────────────────────────────
-  function openRegisterModal() {
+  function openRegisterModal(preselect) {
     document.getElementById('register-form').reset();
+    _populateVmSkuSelect(preselect);
     document.getElementById('register-modal').classList.add('open');
     document.querySelector('#register-form input[name=name]').focus();
+  }
+
+  function _populateVmSkuSelect(preselect) {
+    const sel = document.getElementById('register-vm-sku');
+    const current = preselect || sel.value || 'Standard_NC4as_T4_v3';
+    if (_invData && _invData.items && _invData.items.length) {
+      const sorted = [..._invData.items].sort((a, b) => (a.best_price_usd ?? 9999) - (b.best_price_usd ?? 9999));
+      sel.innerHTML = sorted.map(i => {
+        const vcpu = i.vcpus != null ? ` · ${i.vcpus} vCPU` : '';
+        const mem  = i.memory_gb != null ? ` · ${Number.isInteger(i.memory_gb) ? i.memory_gb : i.memory_gb.toFixed(1)} GB` : '';
+        const price = i.best_price_usd != null ? ` · $${i.best_price_usd.toFixed(4)}/hr` : '';
+        const label = `${i.vm_size}${vcpu}${mem}${price}`;
+        return `<option value="${esc(i.vm_size)}"${i.vm_size === current ? ' selected' : ''}>${esc(label)}</option>`;
+      }).join('');
+    } else {
+      // Inventory not loaded yet — keep the default and add any already-used SKUs
+      const existing = [...new Set(_models.map(m => m.vm_size).filter(Boolean))];
+      const defaults = ['Standard_NC4as_T4_v3'];
+      const all = [...new Set([...defaults, ...existing])];
+      sel.innerHTML = all.map(v => `<option value="${esc(v)}"${v === current ? ' selected' : ''}>${esc(v)}</option>`).join('');
+    }
   }
 
   function closeRegisterModal() {
@@ -1658,6 +1682,7 @@
       _invData = data;
       _invLoaded = true;
       _populateRegionFilter(data.items);
+      _populateVmSkuSelect();
       renderInventory(data.items);
       const cached = data.cached ? ' · cached' : ' · live';
       const fetched = new Date(data.fetched_at).toLocaleTimeString();
@@ -1828,9 +1853,8 @@
   }
 
   function useVmSize(vmSize) {
-    document.querySelector('#register-form input[name=vm_size]').value = vmSize;
     navigate('models');
-    openRegisterModal();
+    openRegisterModal(vmSize);
     toast(`VM size set to ${vmSize}`, 'success');
   }
 
