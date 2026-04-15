@@ -213,16 +213,21 @@ async def _fetch_subscription_available(
     return available, vcpu_counts, vm_family_map
 
 
-async def _fetch_zero_lp_quota_families(candidate_regions: list[str]) -> dict[str, set[str]]:
-    """Return {region → set of family_lp_keys} where the low-priority quota limit is 0.
+async def _fetch_positive_lp_families(candidate_regions: list[str]) -> dict[str, set[str]]:
+    """Return {region → set of family prefixes} that have a positive low-priority quota limit.
 
-    e.g. {"eastus": {"standardncasv3_t4familylowprioritycores"}}
+    e.g. {"eastus": {"standardncasv3_t4family"}} means T4 LP quota > 0 in eastus.
 
-    On any error returns {} so the caller skips this filter.
+    Logic is inverted from checking for zero: we collect what IS allowed so that
+    absent entries (PAYG subs often have no GPU LP quota rows at all) are treated
+    as 0 rather than unknown/skip.
+
+    On per-region errors the region is omitted — the caller treats absent regions as
+    having no positive LP quota (conservative / correct for GPU filtering).
     """
     from services.azure_client import compute_client
 
-    zero_families: dict[str, set[str]] = {}
+    positive: dict[str, set[str]] = {}
 
     async def _check_region(region: str) -> None:
         try:
@@ -230,18 +235,21 @@ async def _fetch_zero_lp_quota_families(candidate_regions: list[str]) -> dict[st
                 usages = comp.usage.list(location=region)
                 async for usage in usages:
                     key = (getattr(usage.name, "value", None) or "").lower()
-                    # Collect family-specific LP quota entries (not the global "lowprioritycores")
-                    # that have a 0 limit — e.g. "standardncasv3_t4familylowpriority"
-                    if "lowpriority" in key and key != "lowprioritycores" and (usage.limit or 0) == 0:
-                        zero_families.setdefault(region, set()).add(key)
+                    # Family LP quota keys contain "lowpriority" and are not the global one.
+                    # e.g. "standardncasv3_t4familylowpriority"
+                    if "lowpriority" in key and key != "lowprioritycores" and (usage.limit or 0) > 0:
+                        # Strip the "lowpriority..." suffix to get the bare family prefix
+                        # e.g. "standardncasv3_t4familylowpriority" → "standardncasv3_t4family"
+                        family_prefix = key[: key.index("lowpriority")]
+                        if family_prefix:
+                            positive.setdefault(region, set()).add(family_prefix)
         except Exception as exc:  # noqa: BLE001
             logger.warning("LP quota check failed for %s: %s", region, exc)
 
     await asyncio.gather(*[_check_region(r) for r in candidate_regions])
 
-    if zero_families:
-        logger.info("Regions with zero GPU LP quota families: %s", {r: list(v) for r, v in zero_families.items()})
-    return zero_families
+    logger.info("Regions with positive GPU LP quota: %s", {r: list(v) for r, v in positive.items()})
+    return positive
 
 
 
@@ -277,21 +285,25 @@ def _build_inventory(
     available_skus: dict[str, set[str]],
     vcpu_counts: dict[str, int],
     vm_family_map: dict[str, str] | None = None,
-    zero_lp_families: dict[str, set[str]] | None = None,
+    positive_lp_families: dict[str, set[str]] | None = None,
 ) -> dict:
     """Build the inventory dict from raw price rows.
 
     available_skus: {region → set_of_vm_size_lower} from the Resource SKUs API.
     vcpu_counts: {vm_size_lower → vCPU count} from SKU capabilities.
-    vm_family_map: {vm_size_lower → family_lp_key} used with zero_lp_families.
-    zero_lp_families: {region → set of family_lp_keys with 0 quota} — (vm_size, region)
-      pairs whose family has no low-priority quota are excluded from the inventory.
+    vm_family_map: {vm_size_lower → family_lower} e.g. "standardncasv3_t4family".
+    positive_lp_families: {region → set of family prefixes with LP quota > 0}.
+      GPU VM sizes whose family prefix has NO entry here are excluded. An empty
+      dict means no GPU LP quota anywhere (typical for PAYG subs) — all GPU sizes
+      are filtered out. None means the quota API failed — GPU filter is skipped.
 
     The SKU filter is skipped when unavailable so the page still shows
     something useful on API errors.
     """
     skip_sku_filter = not available_skus
-    skip_quota_filter = not vm_family_map or not zero_lp_families
+    # Skip quota filter only if we failed to fetch family data (API error).
+    # An empty positive_lp_families dict is legitimate (no GPU quota anywhere).
+    skip_quota_filter = vm_family_map is None or positive_lp_families is None
 
     # vm_size → region → best_price
     pricing: dict[str, dict[str, float]] = {}
@@ -311,14 +323,11 @@ def _build_inventory(
             if vm_size_lower not in region_set:
                 continue
 
-        # Drop (vm_size, region) pairs whose GPU family has 0 low-priority quota.
-        # vm_family_map stores e.g. "standardncasv3_t4family"; zero_lp_families stores
-        # usage keys like "standardncasv3_t4familylowpriority" — match by prefix.
-        if not skip_quota_filter:
+        # For GPU VM sizes: require a positive family LP quota entry in this region.
+        # Missing entry = no quota (PAYG subs often have no GPU LP rows at all).
+        if not skip_quota_filter and _gpu_label(vm_size):
             family_lower = vm_family_map.get(vm_size_lower, "")  # type: ignore[union-attr]
-            if family_lower and any(
-                k.startswith(family_lower) for k in zero_lp_families.get(region, set())  # type: ignore[union-attr]
-            ):
+            if family_lower and family_lower not in positive_lp_families.get(region, set()):  # type: ignore[union-attr]
                 continue
 
         bucket = pricing.setdefault(vm_size, {})
@@ -368,12 +377,12 @@ async def get_spot_inventory(
             from config import get_settings
             regions = list(get_settings().azure_candidate_regions)
             # Fetch prices, SKU availability, and LP quota in parallel
-            rows, (available_skus, vcpu_counts, vm_family_map), zero_lp_families = await asyncio.gather(
+            rows, (available_skus, vcpu_counts, vm_family_map), positive_lp_families = await asyncio.gather(
                 _fetch_raw_spot_prices(regions),
                 _fetch_subscription_available(regions),
-                _fetch_zero_lp_quota_families(regions),
+                _fetch_positive_lp_families(regions),
             )
-            payload = _build_inventory(rows, available_skus, vcpu_counts, vm_family_map, zero_lp_families)
+            payload = _build_inventory(rows, available_skus, vcpu_counts, vm_family_map, positive_lp_families)
             _cache = (now, payload)
         except Exception as exc:
             logger.error("Failed to fetch Spot prices: %s", exc)
