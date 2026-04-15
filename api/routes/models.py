@@ -187,6 +187,33 @@ async def list_all_instances() -> list[VMInstanceResponse]:
 # ── VM lifecycle notifications ────────────────────────────────────────────────
 
 
+@router.delete("/vms/{vm_name}", status_code=status.HTTP_202_ACCEPTED)
+async def delete_vm(vm_name: str, temporal: TemporalClient) -> dict:
+    """Terminate a running VM: mark it terminated and delete its Azure resources."""
+    container = get_instances_container()
+    try:
+        item = await container.read_item(item=vm_name, partition_key=vm_name)
+    except ResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="VM not found")
+
+    item["status"] = VMStatus.terminated.value
+    item["updated_at"] = datetime.now(UTC).isoformat()
+    await container.replace_item(item=vm_name, body=item)
+
+    settings = get_settings()
+    await temporal.start_workflow(
+        DeleteVMWorkflow.run,
+        DeleteAzureVMInput(
+            vm_name=vm_name,
+            resource_group=item.get("resource_group", settings.azure_resource_group),
+        ),
+        id=f"delete-{vm_name}-{uuid.uuid4().hex[:8]}",
+        task_queue=settings.temporal_task_queue,
+    )
+
+    return {"acknowledged": True}
+
+
 @router.post("/vms/{vm_name}/ready", status_code=status.HTTP_200_OK)
 async def notify_vm_ready(vm_name: str) -> dict:
     """Cloud-init calls this after the model finishes downloading."""
