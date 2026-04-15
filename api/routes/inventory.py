@@ -574,18 +574,20 @@ async def get_bare_vm_status(workflow_id: str, request: FastAPIRequest) -> dict:
 
     Returns structured activity info so the frontend can show a live log.
     """
+    from datetime import timedelta
+
     from temporalio.client import WorkflowExecutionStatus
-    from temporalio.service import RPCError
+    from temporalio.service import RPCError, RPCStatusCode
 
     temporal_client = request.app.state.temporal_client
 
     try:
         handle = temporal_client.get_workflow_handle(workflow_id)
-        desc = await handle.describe()
+        desc = await handle.describe(rpc_timeout=timedelta(seconds=5))
         wf_status = desc.status
 
         if wf_status == WorkflowExecutionStatus.COMPLETED:
-            result = await handle.result()
+            result = await handle.result(rpc_timeout=timedelta(seconds=5))
             # handle.result() without result_type returns a plain dict from JSON
             if isinstance(result, dict):
                 vm_name = result.get("vm_name", "")
@@ -608,7 +610,7 @@ async def get_bare_vm_status(workflow_id: str, request: FastAPIRequest) -> dict:
             # Extract the real failure message from the workflow
             error_msg = "Workflow failed"
             try:
-                await handle.result()
+                await handle.result(rpc_timeout=timedelta(seconds=5))
             except WorkflowFailureError as wfe:
                 cause = wfe.__cause__
                 error_msg = getattr(cause, "message", None) or str(wfe)
@@ -632,6 +634,8 @@ async def get_bare_vm_status(workflow_id: str, request: FastAPIRequest) -> dict:
         }
 
     except RPCError as exc:
+        if exc.status in (RPCStatusCode.UNAVAILABLE, RPCStatusCode.DEADLINE_EXCEEDED):
+            raise HTTPException(status_code=503, detail="Temporal unavailable") from exc
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         logger.error("Unexpected error polling workflow %s: %s", workflow_id, exc, exc_info=True)
