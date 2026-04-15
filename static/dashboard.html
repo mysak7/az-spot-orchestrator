@@ -2067,9 +2067,25 @@
 
   // Fetch inventory data and store in _invData/_invLoaded.
   // Returns the data on success, throws on error.
+  // Uses a 90-second timeout because the Azure Retail Prices API can take 10–30 s.
   async function _fetchInventory(forceRefresh = false) {
-    const url = '/api/inventory/spot-prices' + (forceRefresh ? '?refresh=true' : '');
-    const data = await apiFetch(url);
+    const url = API + '/api/inventory/spot-prices' + (forceRefresh ? '?refresh=true' : '');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 90000);
+    let data;
+    try {
+      const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, signal: controller.signal });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
+      data = await res.json();
+    } catch (err) {
+      if (err.name === 'AbortError') throw new Error('Request timed out');
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
     _invData = data;
     _invLoaded = true;
     _populateVmSkuSelect();
