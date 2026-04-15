@@ -1350,9 +1350,9 @@
     }
 
     tbody.innerHTML = items.map(i => {
-      // Look up vm_size from the model catalog, then enrich with SKU info
+      // Look up vm_size from the model catalog, fall back to the instance's own vm_size
       const model = _models.find(m => m.id === i.model_id);
-      const vmSize = model ? model.vm_size : null;
+      const vmSize = (model ? model.vm_size : null) || i.vm_size || null;
       const skuCell = (() => {
         if (!vmSize) return '<span class="muted">—</span>';
         const sku = _skuMap[(vmSize).toLowerCase()] || {};
@@ -1726,8 +1726,11 @@
         apiFetch('/api/instances'),
         apiFetch('/api/storage/cache'),
       ]);
-      // Enrich model VM sizes with vCPU / memory data from the inventory cache
-      const uniqueSizes = [...new Set(models.map(m => m.vm_size).filter(Boolean))];
+      // Enrich VM sizes with vCPU / memory data from the inventory cache (models + bare instances)
+      const uniqueSizes = [...new Set([
+        ...models.map(m => m.vm_size),
+        ...instances.map(i => i.vm_size),
+      ].filter(Boolean))];
       if (uniqueSizes.length) {
         try {
           const skuData = await apiFetch('/api/inventory/sku-info?sizes=' + encodeURIComponent(uniqueSizes.join(',')));
