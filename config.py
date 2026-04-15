@@ -55,6 +55,13 @@ DEFAULT_MODELS: list[DefaultModel] = [
         vm_size="Standard_NC12s_v3",  # 2× V100 16 GB = 32 GB VRAM
         description="Qwen3 32B – best Qwen model fitting in 32 GB VRAM (Q4_K_M ~20 GB)",
     ),
+    DefaultModel(
+        name="qwen3-30b-a3b",
+        model_identifier="qwen3:30b-a3b-q4_K_M",
+        size_mb=17500,
+        vm_size="Standard_FX2ms_v2",  # 2 vCPU / 42 GB RAM — fits Q4_K_M ~17.5 GB in RAM
+        description="Qwen3 30B-A3B (MoE) – 4-bit GGUF, CPU inference on 42 GB RAM spot",
+    ),
 ]
 
 
