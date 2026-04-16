@@ -192,8 +192,14 @@ async def ensure_files_infrastructure(input: EnsureFilesInfraInput) -> EnsureFil
                 location=input.region,
                 enable_https_traffic_only=False,  # NFS 4.1 requires HTTP
                 network_rule_set=NetworkRuleSet(
-                    default_action=DefaultAction.ALLOW,  # start open; restrict after share is ready
-                    bypass=["AzureServices"],
+                    default_action=DefaultAction.DENY,  # NFS requires Deny+VNet rule, not Allow
+                    bypass="AzureServices",
+                    virtual_network_rules=[
+                        VirtualNetworkRule(
+                            virtual_network_resource_id=subnet_id,
+                            action="Allow",
+                        )
+                    ],
                 ),
             )
             poller = await mgmt.storage_accounts.begin_create(input.resource_group, account, params)
@@ -203,11 +209,10 @@ async def ensure_files_infrastructure(input: EnsureFilesInfraInput) -> EnsureFil
             # Ensure HTTPS-only is disabled (needed for NFS)
             if existing.enable_https_traffic_only:
                 from azure.mgmt.storage.models import StorageAccountUpdateParameters
-                update_poller = await mgmt.storage_accounts.begin_update(
+                await mgmt.storage_accounts.update(
                     input.resource_group, account,
                     StorageAccountUpdateParameters(enable_https_traffic_only=False),
                 )
-                await update_poller.result()
                 logger.info("Disabled https-only on %s", account)
 
         # Update network rules: allow subnet (VNet rule) + control plane IP
@@ -215,13 +220,13 @@ async def ensure_files_infrastructure(input: EnsureFilesInfraInput) -> EnsureFil
         activity.heartbeat(f"configuring network rules on {account}")
         try:
             from azure.mgmt.storage.models import StorageAccountUpdateParameters
-            update_poller = await mgmt.storage_accounts.begin_update(
+            await mgmt.storage_accounts.update(
                 input.resource_group,
                 account,
                 StorageAccountUpdateParameters(
                     network_rule_set=NetworkRuleSet(
-                        default_action=DefaultAction.ALLOW,
-                        bypass=["AzureServices"],
+                        default_action=DefaultAction.DENY,  # NFS requires Deny+explicit rules
+                        bypass="AzureServices",
                         virtual_network_rules=[
                             VirtualNetworkRule(
                                 virtual_network_resource_id=subnet_id,
@@ -237,7 +242,6 @@ async def ensure_files_infrastructure(input: EnsureFilesInfraInput) -> EnsureFil
                     )
                 ),
             )
-            await update_poller.result()
             logger.info("Network rules set on %s", account)
         except Exception as exc:
             logger.warning("Network rules update failed (non-fatal): %s", exc)
@@ -335,7 +339,7 @@ async def _upload_dir_to_share(
 
             file_client = dir_client.get_file_client(filename)
             with open(local_file, "rb") as fh:
-                await file_client.upload_file(fh, length=file_size, overwrite=True)
+                await file_client.upload_file(fh, length=file_size)
 
             total_bytes += file_size
             logger.debug("Uploaded %s (%d bytes)", remote_file_path, file_size)

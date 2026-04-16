@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc  # py310 compat
 
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
 

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc  # py310 compat
 
 from azure.core.exceptions import ResourceNotFoundError
 from fastapi import APIRouter, HTTPException, status

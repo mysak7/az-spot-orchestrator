@@ -8,8 +8,14 @@ that the azure-cosmos SDK returns.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
-from enum import StrEnum
+from datetime import datetime, timezone
+UTC = timezone.utc  # py310 compat
+try:
+    from enum import StrEnum
+except ImportError:  # py310 compat
+    from enum import Enum
+    class StrEnum(str, Enum):  # type: ignore[no-redef]
+        pass
 from typing import Literal
 
 from pydantic import BaseModel, Field

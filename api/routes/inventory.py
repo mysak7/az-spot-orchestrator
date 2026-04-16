@@ -12,7 +12,8 @@ import logging
 import re
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc  # py310 compat
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
@@ -558,7 +559,8 @@ def _decode_memo_str(payload: object) -> str | None:
 def _activity_info(pending: list, memo_fields: dict | None = None) -> dict | None:
     """Extract current activity details from Temporal pending_activities list."""
     import json as _json
-    from datetime import UTC, datetime
+    from datetime import datetime, timezone
+    UTC = timezone.utc  # py310 compat
 
     if not pending:
         return None

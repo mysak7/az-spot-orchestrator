@@ -41,6 +41,13 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
+# Suppress noisy Azure HTTP wire logging
+for _noisy in ("azure.core.pipeline.policies.http_logging_policy",
+               "azure.cosmos._cosmos_http_logging_policy",
+               "azure.identity.aio._credentials.environment",
+               "azure.identity.aio._credentials.managed_identity",
+               "azure.identity.aio._credentials.chained"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 logger = logging.getLogger("test_files_pipeline")
 
 TEST_REGION = os.environ.get("TEST_REGION", "swedencentral")
@@ -68,7 +75,10 @@ async def _wait_workflow(client: Client, wf_handle: object, label: str, timeout:
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         try:
-            result = await wf_handle.result(timeout=5)  # type: ignore[union-attr]
+            result = await asyncio.wait_for(
+                wf_handle.result(),  # type: ignore[union-attr]
+                timeout=5,
+            )
             return result
         except asyncio.TimeoutError:
             elapsed = int(time.monotonic() - start)

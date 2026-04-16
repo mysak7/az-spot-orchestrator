@@ -9,7 +9,8 @@ from __future__ import annotations
 import logging
 import math
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+UTC = timezone.utc  # py310 compat
 from typing import Literal
 
 from azure.core.exceptions import ResourceNotFoundError

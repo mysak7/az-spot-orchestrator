@@ -154,6 +154,19 @@ async def _stream_to_blob(
                         )
                         ti.size = size
                         tar.addfile(ti, _LayerReader())
+                        # tarfile reads exactly ti.size bytes and stops; the None
+                        # sentinel (and any extra bytes if download > manifest size)
+                        # must be drained so the next layer's _LayerReader doesn't
+                        # read this layer's sentinel and return premature EOF.
+                        while True:
+                            item = asyncio.run_coroutine_threadsafe(
+                                layer_q.get(), loop
+                            ).result()
+                            if item is None:
+                                break
+                            if isinstance(item, Exception):
+                                raise item
+                            # extra bytes beyond ti.size — discard silently
             asyncio.run_coroutine_threadsafe(upload_q.put(None), loop).result()
         except Exception as exc:
             asyncio.run_coroutine_threadsafe(upload_q.put(exc), loop).result()
