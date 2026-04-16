@@ -1786,12 +1786,8 @@
         <td style="line-height:1.8">${nfsPills}</td>
         <td style="line-height:1.8">${vmCell}</td>
         <td><code style="font-size:11px">${esc(row.vm_size || '—')}</code></td>
-        <td style="white-space:nowrap">
+        <td>
           <button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;white-space:nowrap"
-            onclick="openCreateNfsModal()">
-            Create NFS Share
-          </button>
-          <button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;white-space:nowrap;margin-left:4px"
             onclick="openNfsSeedModal('${esc(row.model_identifier)}')">
             Seed NFS
           </button>
