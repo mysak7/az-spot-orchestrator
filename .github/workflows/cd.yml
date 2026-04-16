@@ -98,6 +98,7 @@ jobs:
             TEMPORAL_TASK_QUEUE=vm-provisioning
         run: |
           COMPOSE_CONTENT=$(base64 -w0 docker-compose.yml)
+          FILEBEAT_CONTENT=$(base64 -w0 filebeat.yml)
           ENV_CONTENT=$(echo "$APP_ENV" | base64 -w0)
           az vm run-command invoke \
             --resource-group az-spot-orchestrator-rg \
@@ -108,6 +109,7 @@ jobs:
               mkdir -p /home/azureuser/az-spot-orchestrator
               cd /home/azureuser/az-spot-orchestrator
               echo '${COMPOSE_CONTENT}' | base64 -d > docker-compose.yml
+              echo '${FILEBEAT_CONTENT}' | base64 -d > filebeat.yml
               echo '${ENV_CONTENT}' | base64 -d > .env
               echo '${{ secrets.GITHUB_TOKEN }}' \
                 | docker login ghcr.io -u ${{ github.actor }} --password-stdin
