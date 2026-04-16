@@ -50,7 +50,6 @@
   header .subtitle { color: var(--muted); font-size: 12px; }
 
   .refresh-indicator {
-    margin-left: auto;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -765,6 +764,71 @@
   .toggle input:checked + .toggle-slider::before { transform: translateX(14px); }
 
   .toggle-label { font-size: 12px; color: var(--muted); }
+
+  /* ── Header context selectors ── */
+  .header-context {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .ctx-group {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .ctx-role {
+    padding: 4px 12px;
+    background: none;
+    border: none;
+    border-right: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 500;
+    font-family: var(--font);
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+    white-space: nowrap;
+  }
+
+  .ctx-role:last-child { border-right: none; }
+  .ctx-role:hover { background: rgba(255,255,255,0.05); color: var(--text); }
+  .ctx-role.active { background: rgba(56,139,253,0.15); color: var(--blue); font-weight: 600; }
+
+  .ctx-rg-select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 12px;
+    padding: 4px 8px;
+    outline: none;
+    cursor: pointer;
+    max-width: 240px;
+  }
+
+  .ctx-rg-select:focus { border-color: var(--blue); }
+  .ctx-rg-select option { background: var(--surface); }
+
+  .rg-filter-pill {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    background: rgba(56,139,253,0.1);
+    border: 1px solid rgba(56,139,253,0.3);
+    border-radius: 20px;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--blue);
+    margin-bottom: 16px;
+  }
+
+  .rg-filter-pill.visible { display: inline-flex; }
 </style>
 </head>
 <body>
@@ -776,6 +840,16 @@
   <div>
     <h1>Azure Spot LLM Orchestrator</h1>
     <div class="subtitle">Control plane dashboard</div>
+  </div>
+  <div class="header-context">
+    <div class="ctx-group">
+      <button class="ctx-role active" data-role="manager" onclick="setRole('manager')">Manager</button>
+      <button class="ctx-role" data-role="technician" onclick="setRole('technician')">Technician</button>
+      <button class="ctx-role" data-role="live" onclick="setRole('live')">Live</button>
+    </div>
+    <select id="global-rg-select" class="ctx-rg-select" onchange="onGlobalRgChange()" title="Scope all views to a resource group">
+      <option value="">All resource groups</option>
+    </select>
   </div>
   <div class="refresh-indicator">
     <div class="pulse"></div>
@@ -861,6 +935,7 @@
           <line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
         </svg>
         <h2>VM Instances</h2>
+        <span class="rg-filter-pill" id="rg-pill-vms"></span>
       </div>
 
 
@@ -909,6 +984,7 @@
           <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
         </svg>
         <h2>Model Catalog</h2>
+        <span class="rg-filter-pill" id="rg-pill-models"></span>
         <button class="btn btn-ghost" style="margin-left:auto" onclick="openOptimizeModal()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
           Optimize SKUs
@@ -1253,6 +1329,8 @@
   let _controlPlaneRegion = '';
   let _pendingRegions = new Set();       // desired checked state (local UI)
   let _pendingModelForRegions = null;    // which model _pendingRegions belongs to
+  let _globalRgFilter = '';             // empty = show all resource groups
+  let _currentRole = 'manager';
 
   // ── Navigation ─────────────────────────────────────────────────────────────
   function navigate(page) {
@@ -1261,6 +1339,62 @@
     document.querySelector(`.nav-item[data-page="${page}"]`).classList.add('active');
     document.getElementById(`page-${page}`).classList.add('active');
     _currentPage = page;
+  }
+
+  // ── Context: role + resource group ────────────────────────────────────────
+  function setRole(role) {
+    _currentRole = role;
+    document.querySelectorAll('.ctx-role').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.role === role);
+    });
+    try { localStorage.setItem('az-spot-role', role); } catch (_) {}
+  }
+
+  function onGlobalRgChange() {
+    _globalRgFilter = document.getElementById('global-rg-select').value;
+    try { localStorage.setItem('az-spot-rg', _globalRgFilter); } catch (_) {}
+    _applyInstanceFilters();
+    renderModels(_models);
+    _updateRgPills();
+  }
+
+  function _rgEstimatedCost(rg) {
+    const activeStatuses = new Set(['pending', 'provisioning', 'downloading', 'running']);
+    return _instancesAll
+      .filter(i => i.resource_group === rg && activeStatuses.has(i.status))
+      .reduce((sum, i) => {
+        const model = _models.find(m => m.id === i.model_id);
+        const vmSize = ((model && model.vm_size) || i.vm_size || '').toLowerCase();
+        const sku = _skuMap[vmSize] || {};
+        return sum + (sku.monthly_price_usd || 0);
+      }, 0);
+  }
+
+  function _populateGlobalRgSelect() {
+    const sel = document.getElementById('global-rg-select');
+    const prev = _globalRgFilter || sel.value;
+    const rgs = [...new Set(_instancesAll.map(i => i.resource_group).filter(Boolean))];
+    // Sort ascending by estimated monthly cost (cheapest first)
+    rgs.sort((a, b) => _rgEstimatedCost(a) - _rgEstimatedCost(b));
+    sel.innerHTML = '<option value="">All resource groups</option>' +
+      rgs.map(rg => {
+        const cost = _rgEstimatedCost(rg);
+        const costStr = cost > 0 ? ` · ~$${Math.round(cost)}/mo` : '';
+        return `<option value="${esc(rg)}"${rg === prev ? ' selected' : ''}>${esc(rg)}${costStr}</option>`;
+      }).join('');
+    // Restore selection (it may have been wiped by innerHTML)
+    if (prev && rgs.includes(prev)) sel.value = prev;
+  }
+
+  function _updateRgPills() {
+    document.querySelectorAll('.rg-filter-pill').forEach(el => {
+      if (_globalRgFilter) {
+        el.textContent = `RG: ${_globalRgFilter}`;
+        el.classList.add('visible');
+      } else {
+        el.classList.remove('visible');
+      }
+    });
   }
 
   // ── Toast ──────────────────────────────────────────────────────────────────
@@ -1371,7 +1505,9 @@
     _instancesAll = instances;
     const runningCount = instances.filter(i => !['terminated', 'evicted', 'failed'].includes(i.status)).length;
     document.getElementById('nav-vms-count').textContent = runningCount;
-    // Populate resource-group dropdown, preserving current selection
+    _populateGlobalRgSelect();
+    _updateRgPills();
+    // Populate resource-group dropdown (per-table fine filter), preserving current selection
     const rgSel = document.getElementById('inst-rg-filter');
     const prevRg = rgSel.value;
     const rgs = [...new Set(instances.map(i => i.resource_group).filter(Boolean))].sort();
@@ -1433,6 +1569,7 @@
 
     let items = _instancesAll.slice();
 
+    if (_globalRgFilter) items = items.filter(i => i.resource_group === _globalRgFilter);
     if (activeStatuses.size > 0) items = items.filter(i => activeStatuses.has(i.status));
     if (rgFilter) items = items.filter(i => i.resource_group === rgFilter);
     if (search) items = items.filter(i =>
@@ -1508,8 +1645,9 @@
   const _VM_STATUS_PRIORITY = { running: 0, downloading: 1, provisioning: 2, pending: 3, evicted: 4, terminated: 5 };
 
   function _activeVMStatus(modelId) {
-    // Find the most "alive" VM for this model
-    const relevant = _instancesAll.filter(i => i.model_id === modelId);
+    // Find the most "alive" VM for this model, scoped to global RG filter
+    let relevant = _instancesAll.filter(i => i.model_id === modelId);
+    if (_globalRgFilter) relevant = relevant.filter(i => i.resource_group === _globalRgFilter);
     if (!relevant.length) return null;
     relevant.sort((a, b) => (_VM_STATUS_PRIORITY[a.status] ?? 9) - (_VM_STATUS_PRIORITY[b.status] ?? 9));
     return relevant[0].status;
@@ -2828,6 +2966,16 @@
   }
 
   // ── Boot ───────────────────────────────────────────────────────────────────
+  // Restore role + RG context from last session
+  try {
+    const savedRole = localStorage.getItem('az-spot-role');
+    if (savedRole && ['manager', 'technician', 'live'].includes(savedRole)) setRole(savedRole);
+  } catch (_) {}
+  try {
+    const savedRg = localStorage.getItem('az-spot-rg');
+    if (savedRg != null) _globalRgFilter = savedRg;
+  } catch (_) {}
+
   _restoreJobs();
   refresh();
   setInterval(refresh, 5000);
