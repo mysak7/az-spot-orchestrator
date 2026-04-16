@@ -18,5 +18,7 @@ setup.kibana:
   host: "kibana:5601"
 
 setup.ilm.enabled: false
+setup.template.name: "az-spot-orchestrator"
+setup.template.pattern: "az-spot-orchestrator-*"
 
 logging.level: warning
