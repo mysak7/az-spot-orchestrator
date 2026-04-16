@@ -1062,10 +1062,11 @@
               <th>NFS Shares</th>
               <th>Active VMs</th>
               <th>VM SKU</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody id="images-tbody">
-            <tr class="empty-row"><td colspan="6">Loading…</td></tr>
+            <tr class="empty-row"><td colspan="7">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1289,6 +1290,38 @@
     <div class="modal-actions" style="margin-top:20px">
       <button type="button" class="btn btn-ghost" onclick="closeOptimizeModal()">Close</button>
     </div>
+  </div>
+</div>
+
+<!-- ── NFS Seed Modal ── -->
+<div class="modal-backdrop" id="nfs-seed-modal" onclick="handleBackdropClick(event)">
+  <div class="modal">
+    <h3>Seed NFS Share</h3>
+    <p style="font-size:13px;color:var(--muted);margin:0 0 16px">
+      Copy the model from blob storage into an Azure Files NFS share in the selected region.
+      A blob must already exist for that model (<em>seed blob first if not</em>).
+      Once seeded, VMs boot in ~2 min instead of 15–45 min.
+    </p>
+    <form id="nfs-seed-form" onsubmit="submitNfsSeed(event)">
+      <input type="hidden" id="nfs-seed-model-id">
+
+      <div class="form-group">
+        <label>Model</label>
+        <input type="text" id="nfs-seed-model-display" disabled style="opacity:0.6;cursor:not-allowed">
+      </div>
+
+      <div class="form-group">
+        <label>Target region</label>
+        <select id="nfs-seed-region" required>
+          <option value="">Loading regions…</option>
+        </select>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeNfsSeedModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="nfs-seed-submit-btn">Seed NFS</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -1729,8 +1762,66 @@
         <td style="line-height:1.8">${nfsPills}</td>
         <td style="line-height:1.8">${vmCell}</td>
         <td><code style="font-size:11px">${esc(row.vm_size || '—')}</code></td>
+        <td>
+          <button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;white-space:nowrap"
+            onclick="openNfsSeedModal('${esc(row.model_identifier)}')">
+            Seed NFS
+          </button>
+        </td>
       </tr>`;
     }).join('');
+  }
+
+  // ── NFS Seed Modal ─────────────────────────────────────────────────────────
+  async function openNfsSeedModal(modelIdentifier) {
+    document.getElementById('nfs-seed-model-id').value = modelIdentifier;
+    document.getElementById('nfs-seed-model-display').value = modelIdentifier;
+
+    const sel = document.getElementById('nfs-seed-region');
+    sel.innerHTML = '<option value="">Loading…</option>';
+
+    document.getElementById('nfs-seed-modal').classList.add('open');
+
+    try {
+      const regions = _cacheRegions.length
+        ? _cacheRegions
+        : await apiFetch('/api/storage/regions');
+      sel.innerHTML = '<option value="">— select region —</option>' +
+        regions.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('');
+    } catch (err) {
+      sel.innerHTML = '<option value="">Failed to load regions</option>';
+      toast('Could not load regions: ' + err.message, 'error');
+    }
+  }
+
+  function closeNfsSeedModal() {
+    document.getElementById('nfs-seed-modal').classList.remove('open');
+  }
+
+  async function submitNfsSeed(event) {
+    event.preventDefault();
+    const modelIdentifier = document.getElementById('nfs-seed-model-id').value;
+    const region = document.getElementById('nfs-seed-region').value;
+    if (!region) { toast('Select a region', 'error'); return; }
+
+    const btn = document.getElementById('nfs-seed-submit-btn');
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+
+    try {
+      await apiFetch('/api/storage/files/seed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_identifier: modelIdentifier, target_region: region }),
+      });
+      toast(`NFS seed started for ${modelIdentifier} → ${region}`, 'success');
+      closeNfsSeedModal();
+    } catch (err) {
+      toast(`NFS seed failed: ${err.message}`, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Seed NFS';
+    }
   }
 
   // ── Blob region spread ─────────────────────────────────────────────────────
@@ -2107,10 +2198,11 @@
     if (e.target === document.getElementById('register-modal')) closeRegisterModal();
     if (e.target === document.getElementById('edit-modal')) closeEditModal();
     if (e.target === document.getElementById('optimize-modal')) closeOptimizeModal();
+    if (e.target === document.getElementById('nfs-seed-modal')) closeNfsSeedModal();
   }
 
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { closeRegisterModal(); closeEditModal(); closeOptimizeModal(); }
+    if (e.key === 'Escape') { closeRegisterModal(); closeEditModal(); closeOptimizeModal(); closeNfsSeedModal(); }
   });
 
   function openEditModal(model) {
