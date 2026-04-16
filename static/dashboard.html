@@ -866,6 +866,9 @@
 
       <div class="filter-bar">
         <input type="text" id="inst-search" placeholder="Search VM name or model…" oninput="filterInstances()">
+        <select id="inst-rg-filter" onchange="filterInstances()" title="Filter by resource group">
+          <option value="">All resource groups</option>
+        </select>
         <label><input type="checkbox" id="inst-filter-all" onchange="onInstFilterAll(this)"> All</label>
         <label><input type="checkbox" class="inst-status-cb" value="pending"       onchange="onInstFilterCb()" checked> Pending</label>
         <label><input type="checkbox" class="inst-status-cb" value="provisioning"  onchange="onInstFilterCb()"> Provisioning</label>
@@ -884,6 +887,7 @@
               <th class="sortable" onclick="sortInstances('model_name')">Model</th>
               <th class="sortable" onclick="sortInstances('status')">Status</th>
               <th class="sortable" onclick="sortInstances('region')">Region</th>
+              <th class="sortable" onclick="sortInstances('resource_group')">Resource Group</th>
               <th>IP Address</th>
               <th>VM SKU</th>
               <th>Workflow</th>
@@ -892,7 +896,7 @@
             </tr>
           </thead>
           <tbody id="instances-tbody">
-            <tr class="empty-row"><td colspan="9">Loading…</td></tr>
+            <tr class="empty-row"><td colspan="10">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1367,6 +1371,12 @@
     _instancesAll = instances;
     const runningCount = instances.filter(i => !['terminated', 'evicted', 'failed'].includes(i.status)).length;
     document.getElementById('nav-vms-count').textContent = runningCount;
+    // Populate resource-group dropdown, preserving current selection
+    const rgSel = document.getElementById('inst-rg-filter');
+    const prevRg = rgSel.value;
+    const rgs = [...new Set(instances.map(i => i.resource_group).filter(Boolean))].sort();
+    rgSel.innerHTML = '<option value="">All resource groups</option>' +
+      rgs.map(rg => `<option value="${esc(rg)}"${rg === prevRg ? ' selected' : ''}>${esc(rg)}</option>`).join('');
     _applyInstanceFilters();
   }
 
@@ -1411,6 +1421,7 @@
     const tbody = document.getElementById('instances-tbody');
     const search = document.getElementById('inst-search').value.toLowerCase();
     const activeStatuses = _instCheckedStatuses();
+    const rgFilter = document.getElementById('inst-rg-filter').value;
 
     // Update sortable header classes
     document.querySelectorAll('#page-vms th.sortable').forEach(th => {
@@ -1423,9 +1434,11 @@
     let items = _instancesAll.slice();
 
     if (activeStatuses.size > 0) items = items.filter(i => activeStatuses.has(i.status));
+    if (rgFilter) items = items.filter(i => i.resource_group === rgFilter);
     if (search) items = items.filter(i =>
       (i.vm_name || '').toLowerCase().includes(search) ||
-      (i.model_name || '').toLowerCase().includes(search)
+      (i.model_name || '').toLowerCase().includes(search) ||
+      (i.resource_group || '').toLowerCase().includes(search)
     );
 
     const col = _instSortCol, dir = _instSortDir;
@@ -1438,7 +1451,7 @@
       const msg = _instancesAll.length
         ? 'No instances match the current filters'
         : 'No VM instances yet — provision a model to get started';
-      tbody.innerHTML = `<tr class="empty-row"><td colspan="9">${msg}</td></tr>`;
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="10">${msg}</td></tr>`;
       return;
     }
 
@@ -1461,6 +1474,7 @@
         <td><strong>${esc(i.model_name)}</strong></td>
         <td>${statusBadge(i.status)}</td>
         <td class="muted">${esc(i.region || '—')}</td>
+        <td class="mono muted" style="font-size:12px">${esc(i.resource_group || '—')}</td>
         <td class="mono" style="font-size:12px">${i.ip_address
           ? `<a href="http://${esc(i.ip_address)}:11434" target="_blank" style="color:var(--blue);text-decoration:none">${esc(i.ip_address)}</a>
              <button class="btn btn-ghost" title="Copy SSH command" style="padding:1px 5px;font-size:11px;margin-left:4px;color:var(--muted)" onclick="copyText('ssh azureuser@${esc(i.ip_address)}','Copied: ssh azureuser@${esc(i.ip_address)}')">SSH</button>`
