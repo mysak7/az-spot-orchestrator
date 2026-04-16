@@ -24,6 +24,7 @@ from temporal.activities.files import (
 )
 from temporal.activities.seed_blob import seed_blob_from_registry
 from temporal.workflows.blob_copy import CopyBlobWorkflow
+from temporal.workflows.create_files_share import CreateFilesShareWorkflow
 from temporal.workflows.seed_blob import SeedBlobWorkflow
 from temporal.workflows.seed_files import SeedFilesWorkflow
 from temporal.workflows.vm_provisioning import (
@@ -53,6 +54,7 @@ async def main() -> None:
             CopyBlobWorkflow,
             SeedBlobWorkflow,
             SeedFilesWorkflow,
+            CreateFilesShareWorkflow,
         ],
         activities=[
             get_cheapest_region,

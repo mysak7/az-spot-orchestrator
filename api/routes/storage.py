@@ -12,6 +12,7 @@ from config import get_settings
 from schemas.api import (
     CacheSourceResponse,
     CopyBlobRequest,
+    CreateFilesShareRequest,
     ModelCacheEntryResponse,
 )
 from services.files_cache import list_files_entries
@@ -23,8 +24,9 @@ from services.model_cache import (
     get_best_source,
     list_cache_entries,
 )
-from temporal.types import CopyBlobInput, SeedBlobInput, SeedFilesInput
+from temporal.types import CopyBlobInput, EnsureFilesInfraInput, SeedBlobInput, SeedFilesInput
 from temporal.workflows.blob_copy import CopyBlobWorkflow
+from temporal.workflows.create_files_share import CreateFilesShareWorkflow
 from temporal.workflows.seed_blob import SeedBlobWorkflow
 from temporal.workflows.seed_files import SeedFilesWorkflow
 
@@ -235,3 +237,33 @@ async def list_files_shares_endpoint() -> list[dict]:
         return [e.model_dump() for e in entries]
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
+
+
+@router.post("/storage/files/create-share", status_code=202)
+async def create_files_share(req: CreateFilesShareRequest, temporal: TemporalClient) -> dict:
+    """Start a CreateFilesShareWorkflow to provision the Azure Files NFS share infrastructure.
+
+    Creates the FileStorage account, VNet service endpoint, and NFS share for the
+    given region without copying any model data.  Use this to pre-provision a share
+    so a later SeedFilesWorkflow can populate it quickly.
+
+    Idempotent — safe to call even if the share already exists.
+    """
+    s = get_settings()
+    workflow_id = f"create-files-share-{req.region}-{uuid.uuid4().hex[:8]}"
+    try:
+        await temporal.start_workflow(
+            CreateFilesShareWorkflow.run,
+            EnsureFilesInfraInput(
+                region=req.region,
+                resource_group=s.azure_resource_group,
+            ),
+            id=workflow_id,
+            task_queue=s.temporal_task_queue,
+        )
+    except Exception as e:
+        logger.error("Failed to start CreateFilesShareWorkflow: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    logger.info("Creating NFS share in %s (workflow %s)", req.region, workflow_id)
+    return {"status": "accepted", "workflow_id": workflow_id}

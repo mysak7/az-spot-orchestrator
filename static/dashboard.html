@@ -1325,6 +1325,30 @@
   </div>
 </div>
 
+<!-- ── Create NFS Share Modal ── -->
+<div class="modal-backdrop" id="create-nfs-modal" onclick="handleBackdropClick(event)">
+  <div class="modal">
+    <h3>Create NFS Share</h3>
+    <p style="font-size:13px;color:var(--muted);margin:0 0 16px">
+      Provision the Azure Files NFS share infrastructure (storage account + network rules) for the
+      selected region. No model data is copied — use <em>Seed NFS</em> afterwards to populate it.
+    </p>
+    <form id="create-nfs-form" onsubmit="submitCreateNfs(event)">
+      <div class="form-group">
+        <label>Region</label>
+        <select id="create-nfs-region" required>
+          <option value="">Loading regions…</option>
+        </select>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeCreateNfsModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="create-nfs-submit-btn">Create Share</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- ── Toast ── -->
 <div id="toast"></div>
 
@@ -1762,8 +1786,12 @@
         <td style="line-height:1.8">${nfsPills}</td>
         <td style="line-height:1.8">${vmCell}</td>
         <td><code style="font-size:11px">${esc(row.vm_size || '—')}</code></td>
-        <td>
+        <td style="white-space:nowrap">
           <button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;white-space:nowrap"
+            onclick="openCreateNfsModal()">
+            Create NFS Share
+          </button>
+          <button class="btn btn-ghost" style="font-size:11px;padding:2px 8px;white-space:nowrap;margin-left:4px"
             onclick="openNfsSeedModal('${esc(row.model_identifier)}')">
             Seed NFS
           </button>
@@ -1821,6 +1849,53 @@
     } finally {
       btn.disabled = false;
       btn.textContent = 'Seed NFS';
+    }
+  }
+
+  // ── Create NFS Share Modal ─────────────────────────────────────────────────
+  async function openCreateNfsModal() {
+    const sel = document.getElementById('create-nfs-region');
+    sel.innerHTML = '<option value="">Loading…</option>';
+    document.getElementById('create-nfs-modal').classList.add('open');
+
+    try {
+      const regions = _cacheRegions.length
+        ? _cacheRegions
+        : await apiFetch('/api/storage/regions');
+      sel.innerHTML = '<option value="">— select region —</option>' +
+        regions.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('');
+    } catch (err) {
+      sel.innerHTML = '<option value="">Failed to load regions</option>';
+      toast('Could not load regions: ' + err.message, 'error');
+    }
+  }
+
+  function closeCreateNfsModal() {
+    document.getElementById('create-nfs-modal').classList.remove('open');
+  }
+
+  async function submitCreateNfs(event) {
+    event.preventDefault();
+    const region = document.getElementById('create-nfs-region').value;
+    if (!region) { toast('Select a region', 'error'); return; }
+
+    const btn = document.getElementById('create-nfs-submit-btn');
+    btn.disabled = true;
+    btn.textContent = 'Creating…';
+
+    try {
+      await apiFetch('/api/storage/files/create-share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ region }),
+      });
+      toast(`NFS share creation started for ${region}`, 'success');
+      closeCreateNfsModal();
+    } catch (err) {
+      toast(`Create NFS share failed: ${err.message}`, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Create Share';
     }
   }
 
@@ -2199,10 +2274,11 @@
     if (e.target === document.getElementById('edit-modal')) closeEditModal();
     if (e.target === document.getElementById('optimize-modal')) closeOptimizeModal();
     if (e.target === document.getElementById('nfs-seed-modal')) closeNfsSeedModal();
+    if (e.target === document.getElementById('create-nfs-modal')) closeCreateNfsModal();
   }
 
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { closeRegisterModal(); closeEditModal(); closeOptimizeModal(); closeNfsSeedModal(); }
+    if (e.key === 'Escape') { closeRegisterModal(); closeEditModal(); closeOptimizeModal(); closeNfsSeedModal(); closeCreateNfsModal(); }
   });
 
   function openEditModal(model) {

@@ -141,3 +141,9 @@ class CopyBlobRequest(BaseModel):
 
     model_identifier: str
     target_region: str
+
+
+class CreateFilesShareRequest(BaseModel):
+    """Request body for POST /api/storage/files/create-share — provision NFS share infrastructure."""
+
+    region: str
