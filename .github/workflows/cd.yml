@@ -116,6 +116,7 @@ jobs:
               # Fix volume permissions so Temporal can write its SQLite DB
               chmod 777 /var/lib/docker/volumes/az-spot-orchestrator_temporal_data/_data 2>/dev/null || true
               docker compose pull api worker
+              docker compose up -d --no-deps elasticsearch kibana filebeat
               docker compose up -d --no-deps api worker
               docker image prune -f
             "
