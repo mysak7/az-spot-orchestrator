@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-import logging
+import time
 
 import httpx
+import structlog
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from db.cosmos import get_instances_container
 from db.models import VMStatus
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 router = APIRouter()
 
 
@@ -46,12 +47,14 @@ async def proxy_to_vm(model_name: str, path: str, request: Request) -> Response:
     ]
 
     if not items or not items[0].get("ip_address"):
+        log.warning("proxy_no_instance", model_name=model_name, status=503)
         raise HTTPException(
             status_code=503,
             detail=f"No running instance for model '{model_name}'",
         )
 
     ip = items[0]["ip_address"]
+    vm_name = items[0].get("vm_name", ip)
     target_url = f"http://{ip}:11434/{path}"
     body = await request.body()
     forward_headers = {
@@ -60,6 +63,7 @@ async def proxy_to_vm(model_name: str, path: str, request: Request) -> Response:
         if k.lower() not in ("host", "content-length", "transfer-encoding")
     }
 
+    start = time.monotonic()
     async with httpx.AsyncClient(timeout=300.0) as client:
         try:
             upstream = await client.request(
@@ -70,8 +74,26 @@ async def proxy_to_vm(model_name: str, path: str, request: Request) -> Response:
                 params=dict(request.query_params),
             )
         except httpx.RequestError as exc:
-            logger.error("Proxy error → %s: %s", target_url, exc)
+            log.error(
+                "proxy_upstream_error",
+                model_name=model_name,
+                vm_name=vm_name,
+                vm_ip=ip,
+                error=str(exc),
+                status=502,
+            )
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    duration_ms = round((time.monotonic() - start) * 1000)
+    log.info(
+        "proxy_request",
+        model_name=model_name,
+        vm_name=vm_name,
+        method=request.method,
+        path=path,
+        status=upstream.status_code,
+        duration_ms=duration_ms,
+    )
 
     return Response(
         content=upstream.content,

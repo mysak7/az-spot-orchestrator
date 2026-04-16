@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 
+import structlog
 from temporalio.client import Client
 from temporalio.worker import Worker
 
 from config import get_settings
+from logging_config import setup_logging
 from temporal.activities.azure import (
     delete_azure_vm,
     get_cheapest_region,
@@ -33,11 +34,8 @@ from temporal.workflows.vm_provisioning import (
     ProvisionVMWorkflow,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-)
-logger = logging.getLogger(__name__)
+setup_logging()
+log = structlog.get_logger()
 
 
 async def main() -> None:
@@ -71,7 +69,7 @@ async def main() -> None:
         ],
     )
 
-    logger.info("Worker listening on task queue '%s'", settings.temporal_task_queue)
+    log.info("worker_started", task_queue=settings.temporal_task_queue)
     await worker.run()
 
 

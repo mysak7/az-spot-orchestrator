@@ -20,7 +20,6 @@ import asyncio
 import concurrent.futures
 import io
 import json
-import logging
 import tarfile
 import tempfile
 import time
@@ -30,6 +29,7 @@ from typing import Any
 
 import lz4.frame
 import httpx
+import structlog
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
@@ -44,7 +44,7 @@ from services.model_cache import (
 )
 from temporal.types import SeedBlobInput, SeedBlobResult
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 _REGISTRY = "https://registry.ollama.ai"
 
@@ -241,6 +241,7 @@ async def seed_blob_from_registry(input: SeedBlobInput) -> SeedBlobResult:
         name, tag = model_identifier, "latest"
 
     s = get_settings()
+    log.info("blob_seed_started", model_identifier=model_identifier, region=region)
     await mark_upload_started(model_identifier, region)
 
     # Only manifest JSON (~KB) needs a temp dir.
@@ -291,9 +292,12 @@ async def seed_blob_from_registry(input: SeedBlobInput) -> SeedBlobResult:
             await register_upload_complete(
                 model_identifier, region, size_bytes, duration
             )
-            logger.info(
-                "Seeded lz4 blob %s in %s: %.1f MB in %.1fs",
-                model_identifier, region, size_bytes / 1_048_576, duration,
+            log.info(
+                "blob_seed_complete",
+                model_identifier=model_identifier,
+                region=region,
+                size_mb=round(size_bytes / 1_048_576, 1),
+                duration_s=round(duration, 1),
             )
             return SeedBlobResult(
                 model_identifier=model_identifier,

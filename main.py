@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -16,18 +16,20 @@ from temporalio.client import Client
 from api.routes import images, inventory, messages, models, proxy, storage
 from config import get_settings
 from db.cosmos import seed_default_models, setup_cosmos
+from logging_config import setup_logging
 
-logger = logging.getLogger(__name__)
+setup_logging()
+log = structlog.get_logger()
 
 
 async def _warm_inventory_cache() -> None:
     """Pre-populate the Spot price inventory cache in the background at startup."""
     try:
-        logger.info("Warming Spot inventory cache…")
+        log.info("inventory_cache_warming")
         await inventory.get_spot_inventory(family=None, gpu_only=False, region=None, refresh=True)
-        logger.info("Spot inventory cache ready")
+        log.info("inventory_cache_ready")
     except Exception as exc:
-        logger.warning("Spot inventory cache warm-up failed (will retry on first request): %s", exc)
+        log.warning("inventory_cache_warmup_failed", error=str(exc))
 
 
 async def _check_keep_alive_models(app: FastAPI) -> None:
@@ -38,8 +40,8 @@ async def _check_keep_alive_models(app: FastAPI) -> None:
     Stale instances are marked 'terminated' so the watchdog (and the UI) can move on.
     """
     import uuid
-    from datetime import datetime, timezone
-    UTC = timezone.utc  # py310 compat, timedelta
+    from datetime import datetime, timedelta, timezone
+    UTC = timezone.utc
 
     from db.cosmos import get_instances_container, get_models_container
     from db.models import VMInstance, VMStatus
@@ -63,7 +65,11 @@ async def _check_keep_alive_models(app: FastAPI) -> None:
     if not keep_alive_models:
         return
 
+    log.info("watchdog_cycle_start", model_count=len(keep_alive_models))
+
     now = datetime.now(UTC)
+    stale_marked = 0
+    reprovisioned = 0
 
     # Collect model_ids that already have a non-terminal, non-stale VM
     active_raw = [
@@ -105,12 +111,15 @@ async def _check_keep_alive_models(app: FastAPI) -> None:
         item["updated_at"] = now.isoformat()
         try:
             await instances_container.replace_item(item=item["id"], body=item)
-            logger.warning(
-                "Keep-alive watchdog: marked stale instance '%s' (model=%s, was %s) as terminated",
-                item["id"], mid, status,
+            stale_marked += 1
+            log.warning(
+                "stale_instance_terminated",
+                vm_name=item["id"],
+                model_id=mid,
+                previous_status=status,
             )
         except Exception as exc:
-            logger.warning("Failed to mark stale instance terminated: %s", exc)
+            log.warning("stale_instance_terminate_failed", vm_name=item["id"], error=str(exc))
             active_model_ids.add(mid)  # skip to avoid double-provisioning on error
 
     for model_item in keep_alive_models:
@@ -145,11 +154,21 @@ async def _check_keep_alive_models(app: FastAPI) -> None:
             id=workflow_id,
             task_queue=settings.temporal_task_queue,
         )
-        logger.info(
-            "Keep-alive watchdog: started ProvisionVMWorkflow %s for model=%s",
-            workflow_id,
-            model_item["name"],
+        reprovisioned += 1
+        log.info(
+            "watchdog_reprovisioning",
+            model_id=model_id,
+            model_name=model_item["name"],
+            vm_name=new_vm_name,
+            workflow_id=workflow_id,
         )
+
+    log.info(
+        "watchdog_cycle_done",
+        models_checked=len(keep_alive_models),
+        reprovisioned=reprovisioned,
+        stale_marked=stale_marked,
+    )
 
 
 async def _keep_alive_watchdog(app: FastAPI) -> None:
@@ -159,7 +178,7 @@ async def _keep_alive_watchdog(app: FastAPI) -> None:
         try:
             await _check_keep_alive_models(app)
         except Exception as exc:
-            logger.warning("Keep-alive watchdog error: %s", exc)
+            log.warning("watchdog_error", error=str(exc))
         await asyncio.sleep(60)
 
 

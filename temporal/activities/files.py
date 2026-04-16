@@ -8,7 +8,6 @@ Two activities:
 from __future__ import annotations
 
 import io
-import logging
 import lz4.frame
 import os
 import tarfile
@@ -17,6 +16,7 @@ import time
 from pathlib import Path
 
 import httpx
+import structlog
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
 from azure.mgmt.storage.models import (
     DefaultAction,
@@ -50,7 +50,7 @@ from temporal.types import (
     SeedFilesResult,
 )
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 async def _get_or_create_subnet_with_storage_endpoint(
@@ -116,7 +116,7 @@ async def _get_or_create_subnet_with_storage_endpoint(
                 ep.service for ep in (subnet.service_endpoints or [])
             ]
             if "Microsoft.Storage" not in existing_endpoints:
-                logger.info("Adding Microsoft.Storage service endpoint to subnet %s", subnet_name)
+                log.info("storage_endpoint_adding", subnet=subnet_name)
                 endpoints = list(subnet.service_endpoints or []) + [
                     ServiceEndpointPropertiesFormat(service="Microsoft.Storage", locations=[region])
                 ]
@@ -174,14 +174,14 @@ async def ensure_files_infrastructure(input: EnsureFilesInfraInput) -> EnsureFil
 
     activity.heartbeat(f"ensuring VNet service endpoint in {input.region}")
     subnet_id = await _get_or_create_subnet_with_storage_endpoint(input.region, input.resource_group)
-    logger.info("Subnet with storage endpoint: %s", subnet_id)
+    log.info("storage_endpoint_ready", subnet_id=subnet_id, region=input.region)
 
     activity.heartbeat(f"creating FileStorage account {account}")
     async with storage_mgmt_client() as mgmt:
         # Create or update storage account
         try:
             existing = await mgmt.storage_accounts.get_properties(input.resource_group, account)
-            logger.info("FileStorage account %s already exists", account)
+            log.info("files_account_exists", account=account, region=input.region)
         except ResourceNotFoundError:
             existing = None
 
@@ -204,7 +204,7 @@ async def ensure_files_infrastructure(input: EnsureFilesInfraInput) -> EnsureFil
             )
             poller = await mgmt.storage_accounts.begin_create(input.resource_group, account, params)
             await poller.result()
-            logger.info("Created FileStorage account %s in %s", account, input.region)
+            log.info("files_account_created", account=account, region=input.region)
         else:
             # Ensure HTTPS-only is disabled (needed for NFS)
             if existing.enable_https_traffic_only:
@@ -213,7 +213,7 @@ async def ensure_files_infrastructure(input: EnsureFilesInfraInput) -> EnsureFil
                     input.resource_group, account,
                     StorageAccountUpdateParameters(enable_https_traffic_only=False),
                 )
-                logger.info("Disabled https-only on %s", account)
+                log.info("files_account_https_disabled", account=account)
 
         # Update network rules: allow subnet (VNet rule) + control plane IP
         # We do this as a separate update after creation to avoid race conditions
@@ -242,9 +242,9 @@ async def ensure_files_infrastructure(input: EnsureFilesInfraInput) -> EnsureFil
                     )
                 ),
             )
-            logger.info("Network rules set on %s", account)
+            log.info("files_network_rules_set", account=account)
         except Exception as exc:
-            logger.warning("Network rules update failed (non-fatal): %s", exc)
+            log.warning("files_network_rules_failed", account=account, error=str(exc))
 
         # Get storage account key for share operations
         activity.heartbeat(f"getting storage account key for {account}")
@@ -266,18 +266,18 @@ async def ensure_files_infrastructure(input: EnsureFilesInfraInput) -> EnsureFil
                     share_quota=5120,  # 5 TB max, billed per-GB used
                 ),
             )
-            logger.info("Created NFS share '%s' on %s", share_name, account)
+            log.info("nfs_share_created", share_name=share_name, account=account, region=input.region)
         except ResourceExistsError:
-            logger.info("NFS share '%s' already exists on %s", share_name, account)
+            log.info("nfs_share_exists", share_name=share_name, account=account)
         except Exception as exc:
             # If NFS protocol fails (e.g. not yet propagated), fall back to SMB share
-            logger.warning("NFS share creation failed (%s), trying without protocol spec", exc)
+            log.warning("nfs_share_creation_failed", account=account, error=str(exc))
             try:
                 await mgmt.file_shares.create(
                     input.resource_group, account, share_name,
                     FileShare(share_quota=5120),
                 )
-                logger.info("Created standard share '%s' on %s", share_name, account)
+                log.info("smb_share_created", share_name=share_name, account=account)
             except ResourceExistsError:
                 pass
 
@@ -342,7 +342,7 @@ async def _upload_dir_to_share(
                 await file_client.upload_file(fh, length=file_size)
 
             total_bytes += file_size
-            logger.debug("Uploaded %s (%d bytes)", remote_file_path, file_size)
+            log.debug("file_uploaded", path=remote_file_path, size_bytes=file_size)
 
     return total_bytes
 
@@ -381,7 +381,7 @@ async def seed_files_from_blob(input: SeedFilesInput) -> SeedFilesResult:
             archive_path = tmp_path / "model.tar.lz4"
 
             activity.heartbeat("downloading blob archive")
-            logger.info("Downloading blob for %s in %s", input.model_identifier, input.region)
+            log.info("nfs_seed_started", model_identifier=input.model_identifier, region=input.region)
 
             async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as http:
                 async with http.stream("GET", download_url) as resp:
@@ -397,7 +397,7 @@ async def seed_files_from_blob(input: SeedFilesInput) -> SeedFilesResult:
                                 last_hb = time.monotonic()
 
             archive_size = archive_path.stat().st_size
-            logger.info("Downloaded %d bytes, extracting...", archive_size)
+            log.info("blob_downloaded", model_identifier=input.model_identifier, size_bytes=archive_size)
 
             # ── Extract lz4+tar ────────────────────────────────────────────────
             activity.heartbeat("extracting archive")
@@ -420,7 +420,7 @@ async def seed_files_from_blob(input: SeedFilesInput) -> SeedFilesResult:
 
             # ── Upload to Files share ──────────────────────────────────────────
             activity.heartbeat(f"uploading to Files share {account}/{share_name}")
-            logger.info("Uploading model files to %s/%s", account, share_name)
+            log.info("nfs_upload_started", model_identifier=input.model_identifier, account=account, share_name=share_name)
 
             async with files_service_client(account, account_key) as svc:
                 share = svc.get_share_client(share_name)
@@ -428,9 +428,12 @@ async def seed_files_from_blob(input: SeedFilesInput) -> SeedFilesResult:
 
         duration = time.monotonic() - start
         await mark_files_available(input.model_identifier, input.region, total_bytes)
-        logger.info(
-            "Files seeding complete: %s in %s — %d bytes in %.1fs",
-            input.model_identifier, input.region, total_bytes, duration,
+        log.info(
+            "nfs_seed_complete",
+            model_identifier=input.model_identifier,
+            region=input.region,
+            size_bytes=total_bytes,
+            duration_s=round(duration, 1),
         )
         return SeedFilesResult(
             model_identifier=input.model_identifier,

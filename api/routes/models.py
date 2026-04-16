@@ -6,8 +6,11 @@ import uuid
 from datetime import datetime, timezone
 UTC = timezone.utc  # py310 compat
 
+import structlog
 from azure.core.exceptions import ResourceNotFoundError
 from fastapi import APIRouter, HTTPException, status
+
+log = structlog.get_logger()
 
 from api.deps import TemporalClient
 from config import get_settings
@@ -251,6 +254,14 @@ async def notify_vm_evicted(
     item["updated_at"] = datetime.now(UTC).isoformat()
     await instances_container.replace_item(item=vm_name, body=item)
 
+    log.info(
+        "eviction_received",
+        vm_name=vm_name,
+        model_id=item.get("model_id"),
+        region=item.get("region"),
+        reason=payload.reason if hasattr(payload, "reason") else None,
+    )
+
     # Delete the old VM's Azure resources so they stop consuming Spot vCPU quota
     settings = get_settings()
     try:
@@ -263,6 +274,7 @@ async def notify_vm_evicted(
             id=f"delete-{vm_name}",
             task_queue=settings.temporal_task_queue,
         )
+        log.info("eviction_cleanup_started", vm_name=vm_name, workflow_id=f"delete-{vm_name}")
     except Exception:
         pass  # best-effort; re-provisioning is more important
 
@@ -304,6 +316,14 @@ async def notify_vm_evicted(
         ),
         id=workflow_id,
         task_queue=settings.temporal_task_queue,
+    )
+    log.info(
+        "eviction_reprovision_triggered",
+        model_id=model_id,
+        model_name=model_item["name"],
+        old_vm_name=vm_name,
+        new_vm_name=new_vm_name,
+        workflow_id=workflow_id,
     )
 
     return {"acknowledged": True, "re_provisioning": True, "new_vm_name": new_vm_name}

@@ -62,5 +62,51 @@ services:
       TEMPORAL_HOST: temporal:7233
     restart: unless-stopped
 
+  # ── Elasticsearch ───────────────────────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9200"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ── Kibana ───────────────────────────────────────────────────────────────────
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.0
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # ── Filebeat (ships Docker container logs → Elasticsearch) ───────────────────
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.13.0
+    user: root
+    command: filebeat -e --strict.perms=false
+    volumes:
+      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
 volumes:
   temporal_data:
+  es_data:

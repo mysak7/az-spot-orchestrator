@@ -6,10 +6,10 @@ All network / Azure SDK calls live here so the Workflow remains deterministic.
 from __future__ import annotations
 
 import asyncio
-import logging
 import re
 
 import httpx
+import structlog
 from azure.core.exceptions import HttpResponseError, ResourceExistsError, ResourceNotFoundError
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
@@ -24,7 +24,7 @@ from temporal.types import (
     WaitForModelInput,
 )
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 _PRICING_URL = "https://prices.azure.com/api/retail/prices"
 
@@ -80,21 +80,24 @@ async def _filter_sku_available_regions(
                     reason = getattr(restriction, "reason_code", None)
                     if reason in ("NotAvailableForSubscription", "QuotaId"):
                         restricted.add(matched)
-                        logger.info(
-                            "SKU %s restricted in %s (reason: %s) — excluding",
-                            vm_size,
-                            matched,
-                            reason,
+                        log.info(
+                            "sku_restricted",
+                            vm_size=vm_size,
+                            region=matched,
+                            reason=reason,
                         )
                         break
     except Exception as exc:  # noqa: BLE001
-        logger.warning("SKU availability check failed, using all regions: %s", exc)
+        log.warning("sku_check_failed", vm_size=vm_size, error=str(exc))
         return candidate_regions, vcpu_count, vm_family
 
     available = [r for r in candidate_regions if r not in restricted]
     if restricted:
-        logger.info(
-            "Regions after SKU filter: %s (removed: %s)", available, sorted(restricted)
+        log.info(
+            "sku_filter_complete",
+            vm_size=vm_size,
+            available_count=len(available),
+            removed=sorted(restricted),
         )
     return (available if available else candidate_regions), vcpu_count, vm_family
 
@@ -111,7 +114,7 @@ async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str, vm_famil
     Returns True on any API error so the caller doesn't skip potentially valid regions.
     """
     if vcpu_count == 0:
-        logger.warning("vCPU count unknown for %s — skipping Spot quota check for %s", vm_size, region)
+        log.warning("vcpu_count_unknown", vm_size=vm_size, region=region)
         return True
 
     # Family prefix used for prefix-matching usage keys, e.g. "standardncasv3_t4family"
@@ -131,9 +134,14 @@ async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str, vm_famil
                 remaining = limit - current
 
                 if usage_key == "lowprioritycores":
-                    logger.info(
-                        "Spot quota in %s (lowPriorityCores): limit=%d used=%d remaining=%d, need=%d",
-                        region, limit, current, remaining, vcpu_count,
+                    log.info(
+                        "spot_quota_check",
+                        region=region,
+                        quota_type="lowPriorityCores",
+                        limit=limit,
+                        used=current,
+                        remaining=remaining,
+                        need=vcpu_count,
                     )
                     global_ok = vcpu_count <= remaining
 
@@ -143,16 +151,21 @@ async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str, vm_famil
                     and usage_key != "lowprioritycores"
                     and usage_key.startswith(family_lower)
                 ):
-                    logger.info(
-                        "Spot quota in %s (%s): limit=%d used=%d remaining=%d, need=%d",
-                        region, usage.name.value, limit, current, remaining, vcpu_count,
+                    log.info(
+                        "spot_quota_check",
+                        region=region,
+                        quota_type=usage.name.value,
+                        limit=limit,
+                        used=current,
+                        remaining=remaining,
+                        need=vcpu_count,
                     )
                     if limit == 0:
-                        logger.warning(
-                            "VM family %s has 0 low-priority quota in %s — "
-                            "GPU families require a quota increase on pay-as-you-go subscriptions "
-                            "(aka.ms/AzurePortalQuota)",
-                            vm_family, region,
+                        log.warning(
+                            "spot_quota_zero",
+                            vm_family=vm_family,
+                            region=region,
+                            hint="GPU families require a quota increase on PAYG subscriptions (aka.ms/AzurePortalQuota)",
                         )
                     family_ok = vcpu_count <= remaining
 
@@ -160,7 +173,7 @@ async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str, vm_famil
                     break  # collected everything we need
 
         if global_ok is None:
-            logger.warning("LowPriorityCores usage not found in region %s — skipping quota check", region)
+            log.warning("spot_quota_not_found", region=region)
 
         # Both checks must pass when applicable
         if global_ok is False:
@@ -170,7 +183,7 @@ async def _check_spot_quota(vm_size: str, vcpu_count: int, region: str, vm_famil
         return True
 
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Spot quota check failed for %s, proceeding anyway: %s", region, exc)
+        log.warning("spot_quota_check_failed", region=region, error=str(exc))
     return True  # fail open
 
 
@@ -217,14 +230,15 @@ async def _get_spot_placement_scores(
                 score: int = entry.get("score", 0)
                 if region in candidate_regions:
                     scores[region] = score
-            logger.info("Spot placement scores for %s: %s", vm_size, scores)
+            log.info("placement_scores", vm_size=vm_size, scores=scores)
         else:
-            logger.warning(
-                "Spot Placement Score API returned %s — falling back to price order",
-                resp.status_code,
+            log.warning(
+                "placement_score_api_error",
+                vm_size=vm_size,
+                status=resp.status_code,
             )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Spot placement score check failed: %s", exc)
+        log.warning("placement_score_check_failed", vm_size=vm_size, error=str(exc))
 
     return scores
 
@@ -247,7 +261,7 @@ async def get_cheapest_region(input: GetCheapestRegionInput) -> GetCheapestRegio
         input.vm_size, list(input.candidate_regions)
     )
     if vm_family:
-        logger.info("VM family for %s: %s", input.vm_size, vm_family)
+        log.info("vm_family_detected", vm_size=input.vm_size, vm_family=vm_family)
 
     # ── 1b. Per-region Spot quota filter ─────────────────────────────────
     # Checks both the global lowPriorityCores limit and the family-specific
@@ -260,17 +274,20 @@ async def get_cheapest_region(input: GetCheapestRegionInput) -> GetCheapestRegio
             if await _check_spot_quota(input.vm_size, vcpu_count, r, vm_family):
                 quota_ok.append(r)
             else:
-                logger.info("Region %s excluded: insufficient Spot quota for %s (%d vCPUs)", r, input.vm_size, vcpu_count)
+                log.info(
+                    "region_excluded_quota",
+                    region=r,
+                    vm_size=input.vm_size,
+                    vcpu_count=vcpu_count,
+                )
         if quota_ok:
             available = quota_ok
         else:
-            logger.warning(
-                "All regions report insufficient Spot quota for %s (%d vCPUs, family=%s) — "
-                "proceeding anyway; provisioner will handle Azure-level rejection. "
-                "Consider requesting a quota increase at aka.ms/AzurePortalQuota.",
-                input.vm_size,
-                vcpu_count,
-                vm_family or "unknown",
+            log.warning(
+                "all_regions_quota_insufficient",
+                vm_size=input.vm_size,
+                vcpu_count=vcpu_count,
+                vm_family=vm_family or "unknown",
             )
 
     prices: dict[str, float] = {}
@@ -301,19 +318,19 @@ async def get_cheapest_region(input: GetCheapestRegionInput) -> GetCheapestRegio
                     if region not in prices or price < prices[region]:
                         prices[region] = price
         else:
-            logger.warning(
-                "Azure Pricing API returned %s for %s",
-                resp.status_code,
-                input.vm_size,
+            log.warning(
+                "pricing_api_error",
+                vm_size=input.vm_size,
+                status=resp.status_code,
             )
 
     for r, p in prices.items():
-        logger.info(
-            "Spot price for %s in %s: $%.4f/hr (score=%s)",
-            input.vm_size,
-            r,
-            p,
-            scores.get(r, "n/a"),
+        log.info(
+            "spot_price",
+            vm_size=input.vm_size,
+            region=r,
+            price_usd=round(p, 4),
+            placement_score=scores.get(r),
         )
 
     # ── 4. Sort: score desc, price asc ───────────────────────────────────
@@ -330,7 +347,14 @@ async def get_cheapest_region(input: GetCheapestRegionInput) -> GetCheapestRegio
     if not ordered:
         ordered = available or list(input.candidate_regions)
 
-    logger.info("Region order for %s: %s", input.vm_size, ordered)
+    log.info(
+        "region_ranking_complete",
+        vm_size=input.vm_size,
+        regions=ordered,
+        top_region=ordered[0] if ordered else None,
+        top_price_usd=round(prices[ordered[0]], 4) if ordered and ordered[0] in prices else None,
+        top_score=scores.get(ordered[0]) if ordered else None,
+    )
     return GetCheapestRegionResult(regions=ordered, prices=prices)
 
 
@@ -464,8 +488,11 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
                                 break
                         break
             except Exception as _sku_err:
-                logger.warning("HyperVGenerations check failed, using Gen1 image: %s", _sku_err)
-        logger.info("VM %s: size=%s → image sku=%s", input.vm_name, input.vm_size, image_sku)
+                log.warning("hyperv_gen_check_failed", vm_name=input.vm_name, error=str(_sku_err))
+
+        log.info("vm_image_selected", vm_name=input.vm_name, vm_size=input.vm_size, image_sku=image_sku)
+        log.info("vm_create_started", vm_name=input.vm_name, region=input.region, vm_size=input.vm_size)
+
         try:
             vm_poller = await comp.virtual_machines.begin_create_or_update(  # type: ignore[call-overload]
                 input.resource_group,
@@ -514,6 +541,13 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
             err_code = getattr(exc.error, "code", None) if hasattr(exc, "error") else None
             # Treat both capacity-unavailable and quota-exceeded as "try next region"
             if err_code in ("SkuNotAvailable", "OperationNotAllowed"):
+                log.warning(
+                    "vm_create_failed",
+                    vm_name=input.vm_name,
+                    region=input.region,
+                    vm_size=input.vm_size,
+                    error_code=err_code,
+                )
                 raise ApplicationError(
                     f"No Spot capacity for {input.vm_size} in {input.region}: {err_code}",
                     type="SkuNotAvailable",
@@ -524,7 +558,7 @@ async def provision_azure_vm(input: ProvisionAzureVMInput) -> str:
         # Fetch the allocated public IP (may differ from creation response)
         pip_info = await net.public_ip_addresses.get(input.resource_group, pip_name)
         ip_address: str = pip_info.ip_address  # type: ignore[assignment]
-        logger.info("VM %s provisioned at %s", input.vm_name, ip_address)
+        log.info("vm_create_succeeded", vm_name=input.vm_name, region=input.region, ip_address=ip_address)
         return ip_address
 
 
@@ -548,13 +582,23 @@ async def wait_for_model_ready(input: WaitForModelInput) -> None:
                     loaded = [m["name"] for m in resp.json().get("models", [])]
                     base = input.model_identifier.split(":")[0]
                     if any(base in name for name in loaded):
-                        logger.info(
-                            "Model %s ready on %s", input.model_identifier, input.ip_address
+                        log.info(
+                            "model_ready",
+                            model_identifier=input.model_identifier,
+                            ip_address=input.ip_address,
+                            elapsed_s=elapsed,
                         )
                         return
             except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError):
                 pass  # VM still booting / Ollama not yet up
 
+            log.info(
+                "model_download_polling",
+                model_identifier=input.model_identifier,
+                ip_address=input.ip_address,
+                attempt=elapsed // poll_interval_s,
+                elapsed_s=elapsed,
+            )
             await asyncio.sleep(poll_interval_s)
             elapsed += poll_interval_s
 
@@ -590,9 +634,9 @@ async def delete_azure_vm(input: DeleteAzureVMInput) -> None:
                     break
                 except Exception as exc:
                     if "NicReservedForAnotherVm" in str(exc):
-                        logger.warning("NIC %s is still reserved; waiting 180 s before retry", name)
+                        log.warning("nic_still_reserved", nic_name=name, vm_name=input.vm_name)
                         await asyncio.sleep(180)
                     else:
                         raise
 
-    logger.info("Deleted VM %s and associated resources", input.vm_name)
+    log.info("vm_deleted", vm_name=input.vm_name)

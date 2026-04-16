@@ -14,3 +14,4 @@ httpx>=0.26.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 lz4>=4.0.0
+structlog>=24.1.0
