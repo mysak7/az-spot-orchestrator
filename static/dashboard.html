@@ -1663,17 +1663,19 @@
       const dur   = e?.upload_duration_seconds ? ` · ${fmtDuration(e.upload_duration_seconds)}` : '';
       const dlPct = e?.download_progress_pct ?? null;
 
-      // meta text: for pulling show "X%" label, others show phase name or status
+      // meta text: show download % for both pulling and uploading phases
+      // (download + azure upload run concurrently in the streaming pipeline)
       const meta  = !e       ? 'not cached'
                   : isFailed ? 'failed'
                   : isAvail  ? `available${size}${dur}`
-                  : phase === 'pulling' ? `pulling${dlPct !== null ? ` · ${dlPct}%` : ''}`
+                  : (phase === 'pulling' || phase === 'uploading') && dlPct !== null && dlPct < 100
+                    ? `${phase} · ${dlPct}%`
                   : phase    ? phase
                   : e.status;
 
-      // progress bar only during pulling, showing real download percentage
-      const bar = (phase === 'pulling' && !isAvail && !isFailed)
-        ? `<div class="rc-progress"><div class="rc-progress-bar prog-busy" style="width:${dlPct ?? 0}%"></div></div>`
+      // progress bar during pulling or uploading phase when download % is known
+      const bar = ((phase === 'pulling' || phase === 'uploading') && dlPct !== null && dlPct < 100 && !isAvail && !isFailed)
+        ? `<div class="rc-progress"><div class="rc-progress-bar prog-busy" style="width:${dlPct}%"></div></div>`
         : '';
 
       // badge shown on the control-plane region when seeding is needed

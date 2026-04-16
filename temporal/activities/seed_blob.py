@@ -41,7 +41,6 @@ from services.model_cache import (
     mark_upload_started,
     register_upload_complete,
     update_download_progress,
-    update_upload_phase,
 )
 from temporal.types import SeedBlobInput, SeedBlobResult
 
@@ -216,8 +215,8 @@ async def _stream_to_blob(
         await on_progress(100)
 
     await archive_future
-    heartbeat_task.cancel()
     await upload_task
+    heartbeat_task.cancel()
     return compressed_bytes
 
 
@@ -266,7 +265,6 @@ async def seed_blob_from_registry(input: SeedBlobInput) -> SeedBlobResult:
                     ) from exc
 
                 (manifests_dir / tag).write_text(json.dumps(manifest))
-                await update_upload_phase(model_identifier, region, "uploading")
 
                 blob = _blob_name(model_identifier, region)
                 start = time.monotonic()
