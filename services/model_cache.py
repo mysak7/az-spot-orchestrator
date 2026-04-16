@@ -129,30 +129,45 @@ def _nearest_region(target_region: str, candidate_regions: list[str]) -> str | N
 
 
 async def get_best_source(model_identifier: str, vm_region: str) -> dict:
-    """Check if a cached blob exists for this model in the VM's region.
+    """Check if a cached blob exists for this model, preferring the VM's own region.
 
     Blobs are managed manually (or via Seed/Copy workflows).
+    Falls back to the nearest region that has the blob before giving up and
+    returning source="ollama" — cross-region blob download is still far faster
+    than pulling from registry.ollama.ai.
     Returns source="blob" with a SAS download URL if found, or source="ollama" if not.
     """
-    blob_name = _blob_name(model_identifier, vm_region)
     s = get_settings()
     account_url = f"https://{s.azure_storage_account_name}.blob.core.windows.net"
 
     async with DefaultAzureCredential() as credential:
         async with BlobServiceClient(account_url=account_url, credential=credential) as client:
+            blob_name = _blob_name(model_identifier, vm_region)
             bc = client.get_blob_client(
                 container=s.azure_storage_container_name,
                 blob=blob_name,
             )
             try:
                 await bc.get_blob_properties()
+                logger.info("Found cached blob for %s in %s", model_identifier, vm_region)
+                download_url = await _generate_sas_url(blob_name, "read")
+                return {"source": "blob", "download_url": download_url}
             except ResourceNotFoundError:
-                logger.info("No cached blob for %s in %s — VM will use Ollama", model_identifier, vm_region)
-                return {"source": "ollama"}
+                pass
 
-    logger.info("Found cached blob for %s in %s", model_identifier, vm_region)
-    download_url = await _generate_sas_url(blob_name, "read")
-    return {"source": "blob", "download_url": download_url}
+    # Exact-region blob not found — check nearby regions before falling back to Ollama.
+    nearest = await find_best_copy_source(model_identifier, vm_region)
+    if nearest:
+        logger.info(
+            "No blob for %s in %s — using nearest region %s instead",
+            model_identifier, vm_region, nearest,
+        )
+        fallback_blob = _blob_name(model_identifier, nearest)
+        download_url = await _generate_sas_url(fallback_blob, "read")
+        return {"source": "blob", "download_url": download_url}
+
+    logger.info("No cached blob for %s in any region — VM will use Ollama", model_identifier)
+    return {"source": "ollama"}
 
 
 async def register_upload_complete(
