@@ -39,7 +39,7 @@ async def _check_keep_alive_models(app: FastAPI) -> None:
     """
     import uuid
     from datetime import datetime, timezone
-UTC = timezone.utc  # py310 compat, timedelta
+    UTC = timezone.utc  # py310 compat, timedelta
 
     from db.cosmos import get_instances_container, get_models_container
     from db.models import VMInstance, VMStatus
