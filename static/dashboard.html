@@ -817,6 +817,15 @@
       <span class="nav-badge" id="nav-cache-count">–</span>
     </button>
 
+    <button class="nav-item" data-page="images" onclick="navigate('images')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+        <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+      </svg>
+      Images
+      <span class="nav-badge" id="nav-images-count">–</span>
+    </button>
+
     <div class="nav-section-label">Planning</div>
 
     <button class="nav-item" data-page="inventory" onclick="navigate('inventory'); loadInventory()">
@@ -1009,6 +1018,54 @@
           </thead>
           <tbody id="cache-tbody">
             <tr class="empty-row"><td colspan="9">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Images page ── -->
+    <div class="page" id="page-images">
+      <div class="page-header">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2">
+          <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+          <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+        </svg>
+        <h2>VM Images</h2>
+      </div>
+
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-value" id="img-stat-models">–</div>
+          <div class="stat-label">Models</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="img-stat-blobs">–</div>
+          <div class="stat-label">Blob regions</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="img-stat-nfs">–</div>
+          <div class="stat-label">NFS regions</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="img-stat-vms">–</div>
+          <div class="stat-label">Running VMs</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Size</th>
+              <th>Blob Cache</th>
+              <th>NFS Shares</th>
+              <th>Active VMs</th>
+              <th>VM SKU</th>
+            </tr>
+          </thead>
+          <tbody id="images-tbody">
+            <tr class="empty-row"><td colspan="6">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1603,6 +1660,79 @@
     `).join('');
   }
 
+  // ── Images state ───────────────────────────────────────────────────────────
+  function renderImages(data) {
+    const tbody = document.getElementById('images-tbody');
+    document.getElementById('nav-images-count').textContent = data.length;
+
+    // Stats
+    const totalBlobs = data.reduce((s, r) => s + r.blobs.length, 0);
+    const totalNfs   = data.reduce((s, r) => s + r.nfs_shares.length, 0);
+    const totalVms   = data.reduce((s, r) => s + r.running_vms, 0);
+    document.getElementById('img-stat-models').textContent = data.length || '—';
+    document.getElementById('img-stat-blobs').textContent  = totalBlobs  || '—';
+    document.getElementById('img-stat-nfs').textContent    = totalNfs    || '—';
+    document.getElementById('img-stat-vms').textContent    = totalVms    || '—';
+
+    if (!data.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No models registered</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = data.map(row => {
+      // Blob pills grouped by status
+      const blobPills = row.blobs.length
+        ? row.blobs.map(b => {
+            const label = b.current_phase
+              ? `${b.region} · ${b.current_phase}${b.download_progress_pct != null ? ' ' + b.download_progress_pct + '%' : ''}`
+              : b.region;
+            return `<span class="badge badge-${esc(b.status)}" title="${esc(b.status)} · ${fmtBytes(b.size_bytes)}">${esc(label)}</span>`;
+          }).join(' ')
+        : '<span class="muted" style="font-size:12px">—</span>';
+
+      // NFS pills
+      const nfsPills = row.nfs_shares.length
+        ? row.nfs_shares.map(n =>
+            `<span class="badge badge-${esc(n.status)}" title="${esc(n.status)} · ${fmtBytes(n.size_bytes)}">${esc(n.region)}</span>`
+          ).join(' ')
+        : '<span class="muted" style="font-size:12px">—</span>';
+
+      // VM summary
+      const totalActive = row.active_vms.length;
+      let vmCell;
+      if (!totalActive) {
+        vmCell = '<span class="muted" style="font-size:12px">—</span>';
+      } else {
+        const parts = [];
+        if (row.running_vms)                      parts.push(`<span class="badge badge-running">${row.running_vms} running</span>`);
+        const other = totalActive - row.running_vms;
+        if (other > 0) {
+          // show each non-running status as its own badge
+          const byStatus = {};
+          row.active_vms.filter(v => v.status !== 'running').forEach(v => {
+            byStatus[v.status] = (byStatus[v.status] || 0) + 1;
+          });
+          Object.entries(byStatus).forEach(([st, cnt]) => {
+            parts.push(`<span class="badge badge-${esc(st)}">${cnt} ${esc(st)}</span>`);
+          });
+        }
+        vmCell = parts.join(' ');
+      }
+
+      return `<tr>
+        <td>
+          <div style="font-weight:600">${esc(row.model_name)}</div>
+          <div class="muted mono" style="font-size:11px">${esc(row.model_identifier)}</div>
+        </td>
+        <td class="mono muted">${fmtBytes((row.size_mb || 0) * 1048576)}</td>
+        <td style="line-height:1.8">${blobPills}</td>
+        <td style="line-height:1.8">${nfsPills}</td>
+        <td style="line-height:1.8">${vmCell}</td>
+        <td><code style="font-size:11px">${esc(row.vm_size || '—')}</code></td>
+      </tr>`;
+    }).join('');
+  }
+
   // ── Blob region spread ─────────────────────────────────────────────────────
   function _populateCacheModelDropdown(entries) {
     const sel = document.getElementById('cache-model-select');
@@ -1831,10 +1961,11 @@
   async function refresh() {
     await _loadCacheRegions();
     try {
-      const [models, instances, cache] = await Promise.all([
+      const [models, instances, cache, images] = await Promise.all([
         apiFetch('/api/models'),
         apiFetch('/api/instances'),
         apiFetch('/api/storage/cache'),
+        apiFetch('/api/images/state'),
       ]);
       // Enrich VM sizes with vCPU / memory data from the inventory cache (models + bare instances)
       const uniqueSizes = [...new Set([
@@ -1854,6 +1985,7 @@
       renderInstances(instances);  // must run before renderModels so _instancesAll is populated
       renderModels(models);
       renderCache(cache);
+      renderImages(images);
       document.getElementById('refresh-label').textContent =
         'Updated ' + new Date().toLocaleTimeString();
     } catch (err) {

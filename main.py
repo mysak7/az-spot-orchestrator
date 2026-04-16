@@ -13,7 +13,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from temporalio.client import Client
 
-from api.routes import inventory, messages, models, proxy, storage
+from api.routes import images, inventory, messages, models, proxy, storage
 from config import get_settings
 from db.cosmos import seed_default_models, setup_cosmos
 
@@ -199,6 +199,7 @@ app.include_router(proxy.router, tags=["proxy"])
 app.include_router(storage.router, prefix="/api", tags=["storage"])
 app.include_router(inventory.router, prefix="/api", tags=["inventory"])
 app.include_router(messages.router, prefix="/api", tags=["messages"])
+app.include_router(images.router, prefix="/api", tags=["images"])
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
