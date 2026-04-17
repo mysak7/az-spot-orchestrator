@@ -7,7 +7,7 @@ Two activities:
 
 from __future__ import annotations
 
-import io
+import asyncio
 import lz4.frame
 import os
 import tarfile
@@ -40,7 +40,7 @@ from services.files_cache import (
     mark_files_provisioning,
 )
 from services.files_client import files_service_client, storage_mgmt_client
-from services.model_cache import _blob_name, get_blob_read_url
+from services.model_cache import get_blob_read_url
 from temporal.types import (
     CheckFilesShareInput,
     CheckFilesShareResult,
@@ -190,9 +190,9 @@ async def ensure_files_infrastructure(input: EnsureFilesInfraInput) -> EnsureFil
                 sku=Sku(name=SkuName.PREMIUM_LRS),
                 kind=Kind.FILE_STORAGE,
                 location=input.region,
-                enable_https_traffic_only=False,  # NFS 4.1 requires HTTP
+                enable_https_traffic_only=True,  # SMB uses HTTPS
                 network_rule_set=NetworkRuleSet(
-                    default_action=DefaultAction.DENY,  # NFS requires Deny+VNet rule, not Allow
+                    default_action=DefaultAction.DENY,
                     bypass="AzureServices",
                     virtual_network_rules=[
                         VirtualNetworkRule(
@@ -206,14 +206,14 @@ async def ensure_files_infrastructure(input: EnsureFilesInfraInput) -> EnsureFil
             await poller.result()
             log.info("files_account_created", account=account, region=input.region)
         else:
-            # Ensure HTTPS-only is disabled (needed for NFS)
-            if existing.enable_https_traffic_only:
+            # Ensure HTTPS-only is enabled (SMB requires HTTPS; old accounts may have it disabled for NFS)
+            if not existing.enable_https_traffic_only:
                 from azure.mgmt.storage.models import StorageAccountUpdateParameters
                 await mgmt.storage_accounts.update(
                     input.resource_group, account,
-                    StorageAccountUpdateParameters(enable_https_traffic_only=False),
+                    StorageAccountUpdateParameters(enable_https_traffic_only=True),
                 )
-                log.info("files_account_https_disabled", account=account)
+                log.info("files_account_https_enabled", account=account)
 
         # Update network rules: allow subnet (VNet rule) + control plane IP
         # We do this as a separate update after creation to avoid race conditions
@@ -253,33 +253,39 @@ async def ensure_files_infrastructure(input: EnsureFilesInfraInput) -> EnsureFil
         if not account_key:
             raise ApplicationError(f"Could not retrieve key for storage account {account}")
 
-        # Create NFS share
-        activity.heartbeat(f"creating NFS share '{share_name}' on {account}")
+        # Create SMB share (REST API seeding requires SMB; NFS shares don't support REST writes)
+        activity.heartbeat(f"creating SMB share '{share_name}' on {account}")
         try:
             await mgmt.file_shares.create(
                 input.resource_group,
                 account,
                 share_name,
-                FileShare(
-                    enabled_protocols="NFS",
-                    root_squash="NoRootSquash",
-                    share_quota=5120,  # 5 TB max, billed per-GB used
-                ),
+                FileShare(share_quota=5120),  # SMB by default (no enabled_protocols = SMB)
             )
-            log.info("nfs_share_created", share_name=share_name, account=account, region=input.region)
+            log.info("smb_share_created", share_name=share_name, account=account, region=input.region)
         except ResourceExistsError:
-            log.info("nfs_share_exists", share_name=share_name, account=account)
-        except Exception as exc:
-            # If NFS protocol fails (e.g. not yet propagated), fall back to SMB share
-            log.warning("nfs_share_creation_failed", account=account, error=str(exc))
-            try:
-                await mgmt.file_shares.create(
-                    input.resource_group, account, share_name,
-                    FileShare(share_quota=5120),
-                )
-                log.info("smb_share_created", share_name=share_name, account=account)
-            except ResourceExistsError:
-                pass
+            # Check if existing share is a leftover NFS share — must replace with SMB
+            existing_share = await mgmt.file_shares.get(input.resource_group, account, share_name)
+            if existing_share.enabled_protocols and "NFS" in existing_share.enabled_protocols:
+                log.info("nfs_share_replacing_with_smb", share_name=share_name, account=account)
+                await mgmt.file_shares.delete(input.resource_group, account, share_name)
+                # Azure deletes shares async — retry until ShareBeingDeleted clears
+                for _attempt in range(12):
+                    activity.heartbeat("waiting for NFS share deletion to complete")
+                    await asyncio.sleep(5)
+                    try:
+                        await mgmt.file_shares.create(
+                            input.resource_group, account, share_name,
+                            FileShare(share_quota=5120),
+                        )
+                        log.info("smb_share_created_after_nfs_replace", share_name=share_name, account=account)
+                        break
+                    except Exception as exc:
+                        if "ShareBeingDeleted" in str(exc):
+                            continue
+                        raise
+            else:
+                log.info("smb_share_exists", share_name=share_name, account=account)
 
     return EnsureFilesInfraResult(
         storage_account=account,
@@ -359,7 +365,6 @@ async def seed_files_from_blob(input: SeedFilesInput) -> SeedFilesResult:
     account = files_account_name(input.region)
     share_name = s.azure_files_share_name
 
-    await mark_files_provisioning(input.model_identifier, input.region)
     start = time.monotonic()
 
     try:
@@ -374,6 +379,8 @@ async def seed_files_from_blob(input: SeedFilesInput) -> SeedFilesResult:
             account_key = (keys_result.keys or [])[0].value
         if not account_key:
             raise ApplicationError(f"Could not retrieve key for storage account {account}")
+
+        await mark_files_provisioning(input.model_identifier, input.region, account_key)
 
         # ── Download + extract to temp dir ─────────────────────────────────────
         with tempfile.TemporaryDirectory(prefix="ollama_files_") as tmpdir:
@@ -427,7 +434,7 @@ async def seed_files_from_blob(input: SeedFilesInput) -> SeedFilesResult:
                 total_bytes = await _upload_dir_to_share(share, models_dir, remote_prefix="")
 
         duration = time.monotonic() - start
-        await mark_files_available(input.model_identifier, input.region, total_bytes)
+        await mark_files_available(input.model_identifier, input.region, total_bytes, account_key)
         log.info(
             "nfs_seed_complete",
             model_identifier=input.model_identifier,
@@ -458,5 +465,6 @@ async def check_files_share_ready(input: CheckFilesShareInput) -> CheckFilesShar
             available=True,
             storage_account=entry.storage_account,
             share_name=entry.share_name,
+            account_key=entry.account_key,
         )
     return CheckFilesShareResult(available=False)

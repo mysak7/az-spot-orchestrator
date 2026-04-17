@@ -126,13 +126,14 @@ class ProvisionVMWorkflow:
 
                 if files_result.available:
                     workflow.logger.info(
-                        "Using NFS Files mount for %s in %s (account=%s)",
+                        "Using SMB Files mount for %s in %s (account=%s)",
                         input.model_identifier, candidate, files_result.storage_account,
                     )
                     cloud_init_b64 = generate_cloud_init_with_files_mount(
                         model_identifier=input.model_identifier,
                         storage_account=files_result.storage_account,
                         share_name=files_result.share_name,
+                        account_key=files_result.account_key,
                         control_plane_url=settings.control_plane_url,
                         vm_name=input.vm_name,
                     )

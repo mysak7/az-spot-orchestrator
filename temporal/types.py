@@ -161,3 +161,4 @@ class CheckFilesShareResult:
     available: bool
     storage_account: str = ""
     share_name: str = ""
+    account_key: str = ""

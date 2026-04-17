@@ -74,7 +74,7 @@ class SystemMessage(BaseModel):
 
 
 class FilesShareEntry(BaseModel):
-    """Tracks a per-region Azure Files NFS share that has model weights pre-loaded."""
+    """Tracks a per-region Azure Files SMB share that has model weights pre-loaded."""
 
     # `id` = "{model_identifier_sanitized}-{region}" for direct point-read
     id: str
@@ -82,6 +82,7 @@ class FilesShareEntry(BaseModel):
     region: str             # e.g. "westeurope"
     storage_account: str    # e.g. "azspotfileswesteurope"
     share_name: str         # always "models"
+    account_key: str = ""   # storage account key for CIFS mount in cloud-init
     size_bytes: int = 0
     status: Literal["provisioning", "available", "failed"] = "provisioning"
     created_at: str = Field(default_factory=_now)

@@ -181,28 +181,35 @@ def generate_cloud_init_with_files_mount(
     model_identifier: str,
     storage_account: str,
     share_name: str,
+    account_key: str,
     control_plane_url: str,
     vm_name: str,
 ) -> str:
-    """Return base64-encoded cloud-config for a VM that mounts model weights from Azure Files NFS.
+    """Return base64-encoded cloud-config for a VM that mounts model weights from Azure Files SMB.
 
-    The NFS share already has the model files; cloud-init just mounts it and starts Ollama.
+    The SMB share already has the model files; cloud-init just mounts it and starts Ollama.
     Boot-to-ready time: ~2 min instead of 15-45 min (no download).
 
     Args:
         model_identifier: Ollama model tag — used only for the ready callback.
         storage_account:  Azure FileStorage account name (e.g. "azspotfileswesteurope").
-        share_name:       NFS share name (always "models").
+        share_name:       SMB share name (always "models").
+        account_key:      Storage account key for CIFS mount authentication.
         control_plane_url: Base URL for the ready callback.
         vm_name:          Unique VM name for the ready callback and eviction monitor.
     """
-    nfs_server = f"{storage_account}.file.core.windows.net"
-    nfs_path = f"/{storage_account}/{share_name}"
+    smb_server = f"//{storage_account}.file.core.windows.net/{share_name}"
 
     yaml = textwrap.dedent(f"""\
         #cloud-config
 
         write_files:
+          - path: /etc/smbcredentials/{storage_account}.cred
+            permissions: '0600'
+            content: |
+              username={storage_account}
+              password={account_key}
+
           - path: /usr/local/bin/eviction-monitor.sh
             permissions: '0755'
             content: |
@@ -251,21 +258,22 @@ def generate_cloud_init_with_files_mount(
 
         packages:
           - curl
-          - nfs-common
+          - cifs-utils
 
         package_update: true
 
         runcmd:
-          # Mount Azure Files NFS share — model files already present
+          # Mount Azure Files SMB share — model files already present
+          - mkdir -p /etc/smbcredentials
           - mkdir -p /mnt/ollama-files
           - |
-            mount -t nfs -o vers=4,minorversion=1,sec=sys,nofail \
-              {nfs_server}:{nfs_path} /mnt/ollama-files
+            mount -t cifs {smb_server} /mnt/ollama-files \
+              -o credentials=/etc/smbcredentials/{storage_account}.cred,dir_mode=0777,file_mode=0777,serverino,nofail,vers=3.0
 
           # Install Ollama
           - curl -fsSL https://ollama.ai/install.sh | sh
 
-          # Override Ollama service: use NFS mount for models, listen on all interfaces
+          # Override Ollama service: use SMB mount for models, listen on all interfaces
           - mkdir -p /etc/systemd/system/ollama.service.d
           - |
             printf '[Service]\\nEnvironment="OLLAMA_MODELS=/mnt/ollama-files"\\nEnvironment="OLLAMA_HOST=0.0.0.0:11434"\\n' \

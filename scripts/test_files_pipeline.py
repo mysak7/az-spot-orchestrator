@@ -30,7 +30,7 @@ import httpx
 from temporalio.client import Client
 
 from config import get_settings
-from db.cosmos import get_cache_container, get_files_container, get_instances_container, setup_cosmos
+from db.cosmos import get_cache_container, setup_cosmos
 from services.files_cache import files_account_name, get_available_files_entry, get_files_entry
 from services.model_cache import _blob_name
 from temporal.types import SeedBlobInput, SeedFilesInput
@@ -242,7 +242,7 @@ async def step_test_inference(ip_address: str) -> None:
 
 
 async def main() -> None:
-    print(f"\n=== Azure Files NFS Pipeline Test ===")
+    print("\n=== Azure Files NFS Pipeline Test ===")
     print(f"  Model:  {TEST_MODEL}")
     print(f"  Region: {TEST_REGION}")
     print(f"  Target: FileStorage account '{files_account_name(TEST_REGION)}'")

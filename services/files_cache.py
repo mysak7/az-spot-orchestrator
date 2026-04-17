@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timezone
 UTC = timezone.utc  # py310 compat
 
-from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
+from azure.core.exceptions import ResourceNotFoundError
 
 from config import get_settings
 from db.cosmos import get_files_container
@@ -55,7 +55,7 @@ async def get_available_files_entry(model_identifier: str, region: str) -> Files
     return None
 
 
-async def mark_files_provisioning(model_identifier: str, region: str) -> None:
+async def mark_files_provisioning(model_identifier: str, region: str, account_key: str = "") -> None:
     container = get_files_container()
     now = datetime.now(UTC).isoformat()
     account = files_account_name(region)
@@ -66,6 +66,7 @@ async def mark_files_provisioning(model_identifier: str, region: str) -> None:
         region=region,
         storage_account=account,
         share_name=s.azure_files_share_name,
+        account_key=account_key,
         status="provisioning",
         created_at=now,
         updated_at=now,
@@ -74,7 +75,7 @@ async def mark_files_provisioning(model_identifier: str, region: str) -> None:
     logger.info("Marked files provisioning for %s in %s", model_identifier, region)
 
 
-async def mark_files_available(model_identifier: str, region: str, size_bytes: int) -> None:
+async def mark_files_available(model_identifier: str, region: str, size_bytes: int, account_key: str = "") -> None:
     container = get_files_container()
     entry_id = f"{sanitize_identifier(model_identifier)}-{region}"
     try:
@@ -95,6 +96,8 @@ async def mark_files_available(model_identifier: str, region: str, size_bytes: i
         "status": "available",
         "updated_at": now,
     })
+    if account_key:
+        item["account_key"] = account_key
     if "created_at" not in item:
         item["created_at"] = now
     await container.upsert_item(item)
