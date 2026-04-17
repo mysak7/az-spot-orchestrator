@@ -4,13 +4,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-### Local Development (3 terminals)
-```bash
-temporal server start-dev              # Terminal 1: Temporal dev server (SQLite) + UI on :8080
-uvicorn main:app --reload --port 8000  # Terminal 2: FastAPI
-python worker.py                        # Terminal 3: Temporal worker
-```
-
 ### Lint / Type Check
 ```bash
 ruff check .          # lint
@@ -18,14 +11,18 @@ ruff format .         # format
 mypy .                # type check
 ```
 
-### Makefile Shortcuts
+### Deployment (runs on control-plane VM, not locally)
 ```bash
-make setup                                                          # Generate .env from Terraform outputs + Azure CLI
-make deploy                                                         # rsync repo to control-plane VM + docker compose up
+make setup            # Generate .env from Terraform outputs + Azure CLI (run once)
+make deploy           # rsync repo to control-plane VM + docker compose pull + up
+make start            # SSH → docker compose up -d (no rsync)
+make stop             # SSH → docker compose down
 make model-register NAME=llama3 TAG=llama3:8b SIZE=Standard_NC4as_T4_v3
 make model-provision MODEL_ID=<id>
-make model-status MODEL_ID=<id>                                     # polls every 3s
+make model-status MODEL_ID=<id>   # watch, polls every 3s
 ```
+
+All services (FastAPI, Temporal, ELK) run on the control-plane VM via `docker-compose.yml`. There is no local dev server.
 
 ### CI/CD
 - **CI** (non-master / PRs): `ruff check`, `ruff format --check`, `mypy`, docker build
