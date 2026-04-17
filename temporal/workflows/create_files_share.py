@@ -29,9 +29,12 @@ class CreateFilesShareWorkflow:
 
     @workflow.run
     async def run(self, input: EnsureFilesInfraInput) -> EnsureFilesInfraResult:
-        return await workflow.execute_activity(
+        workflow.logger.info("create_files_share_workflow_started: region=%s", input.region)
+        result = await workflow.execute_activity(
             ensure_files_infrastructure,
             input,
             start_to_close_timeout=timedelta(minutes=15),
             retry_policy=_INFRA_RETRY,
         )
+        workflow.logger.info("create_files_share_workflow_complete: region=%s", input.region)
+        return result

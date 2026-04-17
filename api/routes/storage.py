@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import logging
 import uuid
 
+import structlog
 from fastapi import APIRouter, HTTPException
 
 from api.deps import TemporalClient
@@ -30,7 +30,7 @@ from temporal.workflows.create_files_share import CreateFilesShareWorkflow
 from temporal.workflows.seed_blob import SeedBlobWorkflow
 from temporal.workflows.seed_files import SeedFilesWorkflow
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 router = APIRouter()
 
@@ -59,7 +59,7 @@ async def get_cache_source(
         source_info = await get_best_source(model_identifier, region)
         return CacheSourceResponse(**source_info)
     except Exception as e:
-        logger.error("Failed to get cache source for %s in %s: %s", model_identifier, region, e)
+        log.error("cache_source_fetch_failed", model_identifier=model_identifier, region=region, error=str(e))
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
@@ -120,8 +120,9 @@ async def copy_blob(req: CopyBlobRequest, temporal: TemporalClient) -> dict:
             task_queue=s.temporal_task_queue,
         )
     except Exception as e:
-        logger.error("Failed to start CopyBlobWorkflow: %s", e)
+        log.error("copy_blob_workflow_start_failed", model_identifier=req.model_identifier, target_region=req.target_region, error=str(e))
         raise HTTPException(status_code=500, detail=str(e)) from e
+    log.info("blob_copy_started", model_identifier=req.model_identifier, target_region=req.target_region, workflow_id=workflow_id)
     return {"status": "accepted", "workflow_id": workflow_id}
 
 
@@ -147,15 +148,10 @@ async def seed_blob_cache(req: CopyBlobRequest, temporal: TemporalClient) -> dic
             task_queue=s.temporal_task_queue,
         )
     except Exception as e:
-        logger.error("Failed to start SeedBlobWorkflow: %s", e)
+        log.error("seed_blob_workflow_start_failed", model_identifier=req.model_identifier, target_region=req.target_region, error=str(e))
         raise HTTPException(status_code=500, detail=str(e)) from e
 
-    logger.info(
-        "Seeding blob cache for %s in %s (workflow %s)",
-        req.model_identifier,
-        req.target_region,
-        workflow_id,
-    )
+    log.info("blob_seed_workflow_started", model_identifier=req.model_identifier, target_region=req.target_region, workflow_id=workflow_id)
     return {"status": "accepted", "workflow_id": workflow_id}
 
 
@@ -166,7 +162,7 @@ async def delete_blob_entry(model_identifier: str, region: str) -> dict:
         await delete_cache_entry(model_identifier, region)
         return {"status": "deleted", "model_identifier": model_identifier, "region": region}
     except Exception as e:
-        logger.error("Failed to delete cache entry: %s", e)
+        log.error("cache_entry_delete_failed", model_identifier=model_identifier, region=region, error=str(e))
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
@@ -177,7 +173,7 @@ async def delete_all_model_blobs(model_identifier: str) -> dict:
         count = await delete_all_cache_for_model(model_identifier)
         return {"status": "deleted", "model_identifier": model_identifier, "count": count}
     except Exception as e:
-        logger.error("Failed to delete all cache entries for %s: %s", model_identifier, e)
+        log.error("cache_model_delete_all_failed", model_identifier=model_identifier, error=str(e))
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
@@ -188,7 +184,7 @@ async def delete_all_blobs() -> dict:
         count = await delete_all_cache_entries()
         return {"status": "deleted", "count": count}
     except Exception as e:
-        logger.error("Failed to delete all cache entries: %s", e)
+        log.error("cache_delete_all_failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
@@ -219,13 +215,10 @@ async def seed_files_share(req: CopyBlobRequest, temporal: TemporalClient) -> di
             task_queue=s.temporal_task_queue,
         )
     except Exception as e:
-        logger.error("Failed to start SeedFilesWorkflow: %s", e)
+        log.error("seed_files_workflow_start_failed", model_identifier=req.model_identifier, target_region=req.target_region, error=str(e))
         raise HTTPException(status_code=500, detail=str(e)) from e
 
-    logger.info(
-        "Seeding Files share for %s in %s (workflow %s)",
-        req.model_identifier, req.target_region, workflow_id,
-    )
+    log.info("files_seed_workflow_started", model_identifier=req.model_identifier, target_region=req.target_region, workflow_id=workflow_id)
     return {"status": "accepted", "workflow_id": workflow_id}
 
 
@@ -262,8 +255,8 @@ async def create_files_share(req: CreateFilesShareRequest, temporal: TemporalCli
             task_queue=s.temporal_task_queue,
         )
     except Exception as e:
-        logger.error("Failed to start CreateFilesShareWorkflow: %s", e)
+        log.error("create_files_share_workflow_start_failed", region=req.region, error=str(e))
         raise HTTPException(status_code=500, detail=str(e)) from e
 
-    logger.info("Creating NFS share in %s (workflow %s)", req.region, workflow_id)
+    log.info("files_share_create_workflow_started", region=req.region, workflow_id=workflow_id)
     return {"status": "accepted", "workflow_id": workflow_id}

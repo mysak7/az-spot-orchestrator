@@ -7,8 +7,8 @@ model-centric response — one row per registered LLM model.
 from __future__ import annotations
 
 import asyncio
-import logging
 
+import structlog
 from fastapi import APIRouter, HTTPException
 
 from db.cosmos import (
@@ -18,7 +18,7 @@ from db.cosmos import (
     get_models_container,
 )
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 router = APIRouter()
 
@@ -109,5 +109,5 @@ async def get_images_state() -> list[dict]:
         return result
 
     except Exception as exc:
-        logger.error("Failed to build images state: %s", exc)
+        log.error("images_state_fetch_failed", error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc)) from exc

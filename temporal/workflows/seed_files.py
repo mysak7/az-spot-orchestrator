@@ -8,7 +8,6 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from config import get_settings
     from temporal.activities.files import ensure_files_infrastructure, seed_files_from_blob
     from temporal.types import (
         EnsureFilesInfraInput,
@@ -34,7 +33,11 @@ class SeedFilesWorkflow:
 
     @workflow.run
     async def run(self, input: SeedFilesInput) -> SeedFilesResult:
-        settings = get_settings()
+        workflow.logger.info(
+            "seed_files_workflow_started: %s in %s",
+            input.model_identifier,
+            input.region,
+        )
 
         await workflow.execute_activity(
             ensure_files_infrastructure,
@@ -45,11 +48,22 @@ class SeedFilesWorkflow:
             start_to_close_timeout=timedelta(minutes=15),
             retry_policy=_INFRA_RETRY,
         )
+        workflow.logger.info(
+            "seed_files_infra_ready: %s in %s",
+            input.model_identifier,
+            input.region,
+        )
 
-        return await workflow.execute_activity(
+        result = await workflow.execute_activity(
             seed_files_from_blob,
             input,
             start_to_close_timeout=timedelta(hours=2),
             heartbeat_timeout=timedelta(minutes=5),
             retry_policy=_SEED_RETRY,
         )
+        workflow.logger.info(
+            "seed_files_workflow_complete: %s in %s",
+            input.model_identifier,
+            input.region,
+        )
+        return result

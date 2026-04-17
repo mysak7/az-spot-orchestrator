@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import logging
-from datetime import datetime, timezone
-UTC = timezone.utc  # py310 compat
+from datetime import UTC, datetime
 
+import structlog
 from azure.core.exceptions import ResourceNotFoundError
 from temporalio import activity
 
 from db.cosmos import get_instances_container, get_messages_container
 from temporal.types import CreateMessageInput, UpdateVMStatusInput
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 @activity.defn
@@ -26,7 +25,7 @@ async def update_vm_status(input: UpdateVMStatusInput) -> None:
     try:
         item = await container.read_item(item=input.vm_name, partition_key=input.vm_name)
     except ResourceNotFoundError:
-        logger.warning("update_vm_status: VM '%s' not found in Cosmos DB", input.vm_name)
+        log.warning("vm_status_update_not_found", vm_name=input.vm_name)
         return
 
     item["status"] = input.status
@@ -39,7 +38,7 @@ async def update_vm_status(input: UpdateVMStatusInput) -> None:
         item["workflow_id"] = input.workflow_id
 
     await container.replace_item(item=input.vm_name, body=item)
-    logger.info("VM '%s' → status=%s", input.vm_name, input.status)
+    log.info("vm_status_updated", vm_name=input.vm_name, status=input.status)
 
 
 @activity.defn
@@ -55,4 +54,4 @@ async def create_system_message(input: CreateMessageInput) -> None:
     )
     container = get_messages_container()
     await container.create_item(body=msg.model_dump())
-    logger.info("System message [%s]: %s", input.level, input.title)
+    log.info("system_message_created", level=input.level, title=input.title, vm_name=input.vm_name)

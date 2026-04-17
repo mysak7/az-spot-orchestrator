@@ -55,12 +55,14 @@ class DeleteVMWorkflow:
 
     @workflow.run
     async def run(self, input: DeleteAzureVMInput) -> None:
+        workflow.logger.info("delete_vm_workflow_started: vm=%s", input.vm_name)
         await workflow.execute_activity(
             delete_azure_vm,
             input,
             start_to_close_timeout=timedelta(minutes=15),
             retry_policy=_FAST_RETRY,
         )
+        workflow.logger.info("delete_vm_workflow_complete: vm=%s", input.vm_name)
 
 
 @workflow.defn
@@ -80,6 +82,12 @@ class ProvisionVMWorkflow:
     @workflow.run
     async def run(self, input: ProvisionVMInput) -> ProvisionVMResult:
         settings = get_settings()
+        workflow.logger.info(
+            "provision_vm_workflow_started: vm=%s model=%s size=%s",
+            input.vm_name,
+            input.model_identifier,
+            input.vm_size,
+        )
 
         # ── Step 1: regions ordered cheapest-first (or forced list) ──────
         if input.force_regions:
@@ -227,6 +235,12 @@ class ProvisionVMWorkflow:
                 raise
 
         if not ip_address:
+            workflow.logger.error(
+                "provision_vm_no_capacity: vm=%s size=%s tried=%s",
+                input.vm_name,
+                input.vm_size,
+                regions,
+            )
             await workflow.execute_activity(
                 update_vm_status,
                 UpdateVMStatusInput(vm_name=input.vm_name, status="terminated"),
@@ -277,6 +291,13 @@ class ProvisionVMWorkflow:
             start_to_close_timeout=timedelta(minutes=2),
             retry_policy=_FAST_RETRY,
         )
+        workflow.logger.info(
+            "provision_vm_workflow_complete: vm=%s model=%s region=%s ip=%s",
+            input.vm_name,
+            input.model_identifier,
+            region,
+            ip_address,
+        )
 
         return ProvisionVMResult(
             vm_name=input.vm_name,
@@ -299,6 +320,12 @@ class LaunchBareVMWorkflow:
     @workflow.run
     async def run(self, input: LaunchBareVMInput) -> LaunchBareVMResult:
         settings = get_settings()
+        workflow.logger.info(
+            "launch_bare_vm_workflow_started: vm=%s size=%s region=%s",
+            input.vm_name,
+            input.vm_size,
+            input.region or "cheapest",
+        )
 
         cloud_init_b64 = generate_bare_cloud_init(
             vm_name=input.vm_name,
@@ -449,6 +476,12 @@ class LaunchBareVMWorkflow:
             retry_policy=_FAST_RETRY,
         )
 
+        workflow.logger.info(
+            "launch_bare_vm_workflow_complete: vm=%s region=%s ip=%s",
+            input.vm_name,
+            region,
+            ip_address,
+        )
         return LaunchBareVMResult(
             vm_name=input.vm_name,
             region=region,

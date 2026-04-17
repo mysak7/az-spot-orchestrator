@@ -24,10 +24,23 @@ class CopyBlobWorkflow:
 
     @workflow.run
     async def run(self, input: CopyBlobInput) -> CopyBlobResult:
-        return await workflow.execute_activity(
+        workflow.logger.info(
+            "blob_copy_workflow_started: %s → %s",
+            input.model_identifier,
+            input.target_region,
+        )
+        result = await workflow.execute_activity(
             copy_blob_to_region,
             input,
             start_to_close_timeout=timedelta(minutes=30),
             heartbeat_timeout=timedelta(seconds=60),
             retry_policy=_RETRY,
         )
+        workflow.logger.info(
+            "blob_copy_workflow_complete: %s → %s (%.1fs, %d bytes)",
+            input.model_identifier,
+            input.target_region,
+            result.duration_seconds,
+            result.size_bytes,
+        )
+        return result

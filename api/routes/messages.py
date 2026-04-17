@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import logging
-
+import structlog
 from fastapi import APIRouter, HTTPException
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 @router.get("/messages")
@@ -28,7 +27,7 @@ async def list_messages(unread_only: bool = False) -> dict:
         items = [item async for item in container.query_items(query=query)]
         return {"items": items, "total": len(items)}
     except Exception as exc:
-        logger.error("Failed to fetch messages: %s", exc)
+        log.error("messages_fetch_failed", error=str(exc))
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
@@ -44,7 +43,7 @@ async def mark_read(msg_id: str) -> dict:
         await container.replace_item(item=msg_id, body=item)
         return {"id": msg_id, "read": True}
     except Exception as exc:
-        logger.error("Failed to mark message %s as read: %s", msg_id, exc)
+        log.error("message_mark_read_failed", msg_id=msg_id, error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
@@ -62,7 +61,7 @@ async def clear_all_messages() -> None:
         for msg_id in ids:
             await container.delete_item(item=msg_id, partition_key=msg_id)
     except Exception as exc:
-        logger.error("Failed to clear messages: %s", exc)
+        log.error("messages_clear_failed", error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
@@ -75,5 +74,5 @@ async def delete_message(msg_id: str) -> None:
         container = get_messages_container()
         await container.delete_item(item=msg_id, partition_key=msg_id)
     except Exception as exc:
-        logger.error("Failed to delete message %s: %s", msg_id, exc)
+        log.error("message_delete_failed", msg_id=msg_id, error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc)) from exc

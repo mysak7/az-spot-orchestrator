@@ -26,10 +26,21 @@ class SeedBlobWorkflow:
 
     @workflow.run
     async def run(self, input: SeedBlobInput) -> SeedBlobResult:
-        return await workflow.execute_activity(
+        workflow.logger.info(
+            "seed_blob_workflow_started: %s in %s",
+            input.model_identifier,
+            input.target_region,
+        )
+        result = await workflow.execute_activity(
             seed_blob_from_registry,
             input,
             start_to_close_timeout=timedelta(hours=3),  # large models may be slow
             heartbeat_timeout=timedelta(minutes=5),
             retry_policy=_RETRY,
         )
+        workflow.logger.info(
+            "seed_blob_workflow_complete: %s in %s",
+            input.model_identifier,
+            input.target_region,
+        )
+        return result

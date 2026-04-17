@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 
+import structlog
 from azure.core.exceptions import AzureError
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
@@ -21,7 +21,7 @@ from services.model_cache import (
 )
 from temporal.types import CopyBlobInput, CopyBlobResult
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 @activity.defn
@@ -40,12 +40,7 @@ async def copy_blob_to_region(input: CopyBlobInput) -> CopyBlobResult:
             non_retryable=True,
         )
 
-    logger.info(
-        "Starting blob copy %s: %s → %s",
-        input.model_identifier,
-        source_region,
-        input.target_region,
-    )
+    log.info("blob_copy_started", model_identifier=input.model_identifier, source_region=source_region, target_region=input.target_region)
 
     await mark_copy_started(input.model_identifier, input.target_region)
     source_url = await get_blob_read_url(input.model_identifier, source_region)
@@ -90,13 +85,7 @@ async def copy_blob_to_region(input: CopyBlobInput) -> CopyBlobResult:
     await register_upload_complete(
         input.model_identifier, input.target_region, size_bytes, duration
     )
-    logger.info(
-        "Blob copy complete: %s → %s in %.1fs (%d bytes)",
-        source_region,
-        input.target_region,
-        duration,
-        size_bytes,
-    )
+    log.info("blob_copy_complete", model_identifier=input.model_identifier, source_region=source_region, target_region=input.target_region, duration_s=round(duration, 1), size_bytes=size_bytes)
     return CopyBlobResult(
         model_identifier=input.model_identifier,
         source_region=source_region,
