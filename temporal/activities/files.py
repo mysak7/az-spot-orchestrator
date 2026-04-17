@@ -268,6 +268,14 @@ async def ensure_files_infrastructure(input: EnsureFilesInfraInput) -> EnsureFil
             existing_share = await mgmt.file_shares.get(input.resource_group, account, share_name)
             if existing_share.enabled_protocols and "NFS" in existing_share.enabled_protocols:
                 log.info("nfs_share_replacing_with_smb", share_name=share_name, account=account)
+                # Disable soft-delete so the deleted NFS share isn't restored on recreate
+                from azure.mgmt.storage.models import DeleteRetentionPolicy, FileServiceProperties
+                await mgmt.file_services.set_service_properties(
+                    input.resource_group, account,
+                    FileServiceProperties(
+                        share_delete_retention_policy=DeleteRetentionPolicy(enabled=False)
+                    ),
+                )
                 await mgmt.file_shares.delete(input.resource_group, account, share_name)
                 # Azure deletes shares async — retry until ShareBeingDeleted clears
                 for _attempt in range(12):
