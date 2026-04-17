@@ -11,7 +11,6 @@ import structlog
 def setup_logging() -> None:
     shared_processors: list = [
         structlog.contextvars.merge_contextvars,
-        structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
@@ -26,8 +25,9 @@ def setup_logging() -> None:
     )
 
     # Route stdlib logging (Azure SDK, Temporal, etc.) through the same JSON formatter
+    # add_logger_name only works with stdlib loggers (has .name), not PrintLogger
     formatter = structlog.stdlib.ProcessorFormatter(
-        foreign_pre_chain=shared_processors,
+        foreign_pre_chain=[structlog.stdlib.add_logger_name] + shared_processors,
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             structlog.processors.JSONRenderer(),
